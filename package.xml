@@ -18,4 +18,7 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
+  <build_depend>pcl_msgs</build_depend>
+  <build_depend>pcl_conversions</build_depend>
+  <build_depend>PCL</build_depend>
 </package>

@@ -9,6 +9,8 @@ find_package(ament_cmake REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(pcl_conversions REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED)
 
 find_package(PCL REQUIRED)
 
@@ -18,6 +20,7 @@ target_include_directories(my_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
   ${PCL_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 target_compile_features(my_node PUBLIC c_std_99 cxx_std_17)
@@ -26,9 +29,13 @@ ament_target_dependencies(my_node
   rclcpp 
   sensor_msgs 
   pcl_conversions
+  cv_bridge
 )
 
-target_link_libraries(my_node ${PCL_LIBRARIES})
+target_link_libraries(my_node 
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
 
 install(TARGETS my_node
   DESTINATION lib/${PROJECT_NAME})

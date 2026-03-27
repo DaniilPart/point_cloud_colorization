@@ -1,5 +1,4 @@
 #include <memory>
-
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
@@ -8,9 +7,14 @@
 #include <pcl/point_types.h>
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/opencv.hpp>
+#include <Eigen/Dense>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <tf2/exceptions.h>
 
 using std::placeholders::_1;
 using std::placeholders::_2;
@@ -33,19 +37,111 @@ class MinimalSubscriber : public rclcpp::Node
       sync_.reset(new Sync(MySyncPolicy(10), lidar, camera));
       sync_->registerCallback(std::bind(&MinimalSubscriber::topic_callback, this, _1, _2));
 
+      publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/colorizer/debug/colored_cloud", 10);
+
+      tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+      tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
     }
   private:
     void topic_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg, const sensor_msgs::msg::CompressedImage::ConstSharedPtr img_msg) const
     {
-      RCLCPP_INFO(this->get_logger(), "Synchronized pair received at time %d.%d and %d.%d", 
-                  msg->header.stamp.sec, msg->header.stamp.nanosec, img_msg->header.stamp.sec, img_msg->header.stamp.nanosec);
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_in(new pcl::PointCloud<pcl::PointXYZ>);
+      pcl::fromROSMsg(*msg, *cloud_in);
+
+      cv::Mat cv_image;
+      try {
+          cv_image = cv_bridge::toCvCopy(img_msg, "bgr8")->image;
+      } catch (cv_bridge::Exception& e) {
+          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+          return;
+      }
+
+      geometry_msgs::msg::TransformStamped t;
+      try {
+          t = tf_buffer_->lookupTransform(
+              "pylon_camera",
+              "os1/os_lidar",
+              msg->header.stamp
+          );
+      } catch (const tf2::TransformException & ex) {
+          RCLCPP_WARN(this->get_logger(), "Could not transform os1/os_lidar to pylon_camera: %s", ex.what());
+          return;
+      }
+
+      RCLCPP_INFO(this->get_logger(), "Translation vector: [%.3f, %.3f, %.3f]",
+                  t.transform.translation.x,
+                  t.transform.translation.y,
+                  t.transform.translation.z);
+
+      Eigen::Quaternionf q(
+          t.transform.rotation.w,
+          t.transform.rotation.x,
+          t.transform.rotation.y,
+          t.transform.rotation.z
+      );
+      
+      Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
+      transform.block<3, 3>(0, 0) = q.toRotationMatrix();
+      transform(0, 3) = t.transform.translation.x;
+      transform(1, 3) = t.transform.translation.y;
+      transform(2, 3) = t.transform.translation.z;
+
+      Eigen::Matrix3f K;
+      K << 1194.40697, 0.0, 974.09376,
+           0.0, 1197.38886, 596.0597,
+           0.0, 0.0, 1.0;
+
+      pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_out(new pcl::PointCloud<pcl::PointXYZRGB>);
+      cloud_out->points.reserve(cloud_in->points.size());
+
+      for (const auto& point : cloud_in->points) {
+          pcl::PointXYZRGB color_point;
+          color_point.x = point.x;
+          color_point.y = point.y;
+          color_point.z = point.z;
+          color_point.r = 128;
+          color_point.g = 128;
+          color_point.b = 128;
+
+          Eigen::Vector4f pt_lidar(point.x, point.y, point.z, 1.0f);
+          Eigen::Vector4f pt_camera = transform * pt_lidar;
+
+          if (pt_camera.z() <= 0) {
+              cloud_out->points.push_back(color_point);
+              continue;
+          }
+
+          float x_norm = pt_camera.x() / pt_camera.z();
+          float y_norm = pt_camera.y() / pt_camera.z();
+          Eigen::Vector3f pt_norm(x_norm, y_norm, 1.0f);
+
+          Eigen::Vector3f pixel_coords = K * pt_norm;
+          int u = std::round(pixel_coords.x());
+          int v = std::round(pixel_coords.y());
+
+          if (u >= 0 && u < cv_image.cols && v >= 0 && v < cv_image.rows) {
+              cv::Vec3b color = cv_image.at<cv::Vec3b>(v, u);
+              color_point.b = color[0];
+              color_point.g = color[1];
+              color_point.r = color[2];
+          }
+
+          cloud_out->points.push_back(color_point);
+      }
+
+      sensor_msgs::msg::PointCloud2 msg_out;
+      pcl::toROSMsg(*cloud_out, msg_out);
+      msg_out.header = msg->header;
+      publisher_->publish(msg_out);
     }
 
     message_filters::Subscriber<sensor_msgs::msg::PointCloud2> lidar;
     message_filters::Subscriber<sensor_msgs::msg::CompressedImage> camera;
     std::shared_ptr<Sync> sync_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
 
-
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 };
 
 int main(int argc, char * argv[])

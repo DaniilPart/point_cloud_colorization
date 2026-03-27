@@ -11,6 +11,11 @@ find_package(rclcpp REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_eigen REQUIRED)
+find_package(tf2 REQUIRED)              
+find_package(geometry_msgs REQUIRED)    
+find_package(message_filters REQUIRED)   
 
 find_package(PCL REQUIRED)
 
@@ -30,6 +35,11 @@ ament_target_dependencies(my_node
   sensor_msgs 
   pcl_conversions
   cv_bridge
+  tf2_ros
+  tf2_eigen
+  tf2             
+  geometry_msgs    
+  message_filters  
 )
 
 target_link_libraries(my_node 

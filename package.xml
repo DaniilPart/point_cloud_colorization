@@ -15,10 +15,17 @@
   <export>
     <build_type>ament_cmake</build_type>
   </export>
+
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>cv_bridge</depend>    
+  <depend>cv_bridge</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_eigen</depend>
+  <depend>tf2</depend>             
+  <depend>geometry_msgs</depend>   
+  <depend>message_filters</depend> 
+
   <build_depend>pcl_msgs</build_depend>
   <build_depend>pcl_conversions</build_depend>
   <build_depend>PCL</build_depend>

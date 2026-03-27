@@ -15,7 +15,7 @@
     - [Step 1: Package Initialization](#step-1-package-initialization)
     - [Step 2: Point Cloud Ingestion](#step-2-point-cloud-ingestion)
     - [Step 3: Basic Colorization and Visualization (Purple Cloud)](#step-3-basic-colorization-and-visualization-purple-cloud)
-    - [Step 4: Image Ingestion](#step-4-image-ingestion)
+    - [Step 4:](#step-4)
     - [Step 5: Image Decompression and Republishing](#step-5-image-decompression-and-republishing)
     - [Step 6: Time Synchronization](#step-6-time-synchronization)
     - [Step 7: Initial Accurate Colorization (Hardcoded Pipeline)](#step-7-initial-accurate-colorization-hardcoded-pipeline)
@@ -132,7 +132,7 @@ RViz2 is your primary tool for verifying spatial data. Here is how to use it eff
 
 **Verification:** Play the bagfile. Open RViz2, set the fixed frame to `os1/os_lidar`, and add a PointCloud2 display mapped to your debug topic. Set the "Color Transformer" to "RGB8". The point cloud must be visible and entirely purple.
 
-### Step 4: Image Ingestion
+### Step 4: 
 
 **Task:** Create a second subscriber to listen to `/camera_front/image_raw/compressed`. Write a callback that extracts the image dimensions (height and width) from the compressed message structure or by partially decoding it.
 

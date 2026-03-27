@@ -2,6 +2,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
+#include "sensor_msgs/msg/camera_info.hpp"
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -41,10 +42,34 @@ class MinimalSubscriber : public rclcpp::Node
 
       tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
       tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+      camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
+          "/camera_front/camera_info", 10,
+          std::bind(&MinimalSubscriber::camera_info_callback, this, std::placeholders::_1));
     }
   private:
+    void camera_info_callback(const sensor_msgs::msg::CameraInfo::SharedPtr msg)
+    {
+        if (camera_info_received_) {
+            return;
+        }
+
+        K_ << msg->k[0], msg->k[1], msg->k[2],
+              msg->k[3], msg->k[4], msg->k[5],
+              msg->k[6], msg->k[7], msg->k[8];
+
+        D_ = msg->d;
+
+        camera_info_received_ = true;
+        RCLCPP_INFO(this->get_logger(), "Camera calibration parameters successfully received and stored.");
+    }
+
     void topic_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg, const sensor_msgs::msg::CompressedImage::ConstSharedPtr img_msg) const
     {
+      if (!camera_info_received_) {
+          return;
+      }
+
       pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_in(new pcl::PointCloud<pcl::PointXYZ>);
       pcl::fromROSMsg(*msg, *cloud_in);
 
@@ -86,11 +111,6 @@ class MinimalSubscriber : public rclcpp::Node
       transform(1, 3) = t.transform.translation.y;
       transform(2, 3) = t.transform.translation.z;
 
-      Eigen::Matrix3f K;
-      K << 1194.40697, 0.0, 974.09376,
-           0.0, 1197.38886, 596.0597,
-           0.0, 0.0, 1.0;
-
       pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_out(new pcl::PointCloud<pcl::PointXYZRGB>);
       cloud_out->points.reserve(cloud_in->points.size());
 
@@ -115,7 +135,7 @@ class MinimalSubscriber : public rclcpp::Node
           float y_norm = pt_camera.y() / pt_camera.z();
           Eigen::Vector3f pt_norm(x_norm, y_norm, 1.0f);
 
-          Eigen::Vector3f pixel_coords = K * pt_norm;
+          Eigen::Vector3f pixel_coords = K_ * pt_norm;
           int u = std::round(pixel_coords.x());
           int v = std::round(pixel_coords.y());
 
@@ -142,6 +162,11 @@ class MinimalSubscriber : public rclcpp::Node
 
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
+    Eigen::Matrix3f K_;
+    std::vector<double> D_;
+    bool camera_info_received_ = false;
 };
 
 int main(int argc, char * argv[])

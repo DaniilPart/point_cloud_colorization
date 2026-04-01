@@ -1,4 +1,6 @@
+#include <cmath>
 #include <memory>
+#include <vector>
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
@@ -16,6 +18,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/exceptions.h>
+#include <rmw/qos_profiles.h>
 
 
 using std::placeholders::_1;
@@ -37,9 +40,11 @@ class MinimalSubscriber : public rclcpp::Node
     MinimalSubscriber()
     : Node("minimal_subscriber")
     {
-      lidar.subscribe(this, "/os1/points" );
-      camera.subscribe(this, "/camera_front/image_raw/compressed" );
-      sync_.reset(new Sync(MySyncPolicy(10), lidar, camera));
+      const auto sensor_qos = rmw_qos_profile_sensor_data;
+
+      lidar.subscribe(this, "/os1/points", sensor_qos);
+      camera.subscribe(this, "/camera_front/image_raw/compressed", sensor_qos);
+      sync_ = std::make_shared<Sync>(MySyncPolicy(10), lidar, camera);
       sync_->registerCallback(std::bind(&MinimalSubscriber::topic_callback, this, _1, _2));
 
 
@@ -51,7 +56,7 @@ class MinimalSubscriber : public rclcpp::Node
 
 
       camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-          "/camera_front/camera_info", 10,
+          "/camera_front/camera_info", rclcpp::SensorDataQoS(),
           std::bind(&MinimalSubscriber::camera_info_callback, this, std::placeholders::_1));
     }
   private:
@@ -61,13 +66,11 @@ class MinimalSubscriber : public rclcpp::Node
             return;
         }
 
-
-        K_ << msg->k[0], msg->k[1], msg->k[2],
-              msg->k[3], msg->k[4], msg->k[5],
-              msg->k[6], msg->k[7], msg->k[8];
-
-
-        D_ = msg->d;
+        camera_matrix_ = (cv::Mat_<double>(3, 3) <<
+            msg->k[0], msg->k[1], msg->k[2],
+            msg->k[3], msg->k[4], msg->k[5],
+            msg->k[6], msg->k[7], msg->k[8]);
+        dist_coeffs_ = cv::Mat(msg->d).clone();
 
 
         camera_info_received_ = true;
@@ -93,20 +96,6 @@ class MinimalSubscriber : public rclcpp::Node
           RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
           return;
       }
-
-
-      cv::Mat camera_matrix = (cv::Mat_<double>(3, 3) << 
-          K_(0,0), K_(0,1), K_(0,2),
-          K_(1,0), K_(1,1), K_(1,2),
-          K_(2,0), K_(2,1), K_(2,2));
-
-
-      cv::Mat dist_coeffs(D_);
-
-
-      cv::Mat undistorted_image;
-      cv::undistort(cv_image, undistorted_image, camera_matrix, dist_coeffs);
-
 
       geometry_msgs::msg::TransformStamped t;
       try {
@@ -142,11 +131,19 @@ class MinimalSubscriber : public rclcpp::Node
 
 
       pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_out(new pcl::PointCloud<pcl::PointXYZRGB>);
-      cloud_out->points.reserve(cloud_in->points.size());
+      cloud_out->points.resize(cloud_in->points.size());
+      cloud_out->width = cloud_in->width;
+      cloud_out->height = cloud_in->height;
+      cloud_out->is_dense = cloud_in->is_dense;
 
+      std::vector<cv::Point3f> camera_points;
+      std::vector<std::size_t> projected_indices;
+      camera_points.reserve(cloud_in->points.size());
+      projected_indices.reserve(cloud_in->points.size());
 
-      for (const auto& point : cloud_in->points) {
-          pcl::PointXYZRGB color_point;
+      for (std::size_t i = 0; i < cloud_in->points.size(); ++i) {
+          const auto& point = cloud_in->points[i];
+          auto& color_point = cloud_out->points[i];
           color_point.x = point.x;
           color_point.y = point.y;
           color_point.z = point.z;
@@ -154,36 +151,44 @@ class MinimalSubscriber : public rclcpp::Node
           color_point.g = 128;
           color_point.b = 128;
 
+          if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+              continue;
+          }
 
           Eigen::Vector4f pt_lidar(point.x, point.y, point.z, 1.0f);
           Eigen::Vector4f pt_camera = transform * pt_lidar;
 
 
           if (pt_camera.z() <= 0) {
-              cloud_out->points.push_back(color_point);
               continue;
           }
 
+          camera_points.emplace_back(pt_camera.x(), pt_camera.y(), pt_camera.z());
+          projected_indices.push_back(i);
+      }
 
-          float x_norm = pt_camera.x() / pt_camera.z();
-          float y_norm = pt_camera.y() / pt_camera.z();
-          Eigen::Vector3f pt_norm(x_norm, y_norm, 1.0f);
+      if (!camera_points.empty()) {
+          std::vector<cv::Point2f> image_points;
+          cv::projectPoints(
+              camera_points,
+              zero_rotation_,
+              zero_translation_,
+              camera_matrix_,
+              dist_coeffs_,
+              image_points);
 
+          for (std::size_t i = 0; i < image_points.size(); ++i) {
+              const int u = cvRound(image_points[i].x);
+              const int v = cvRound(image_points[i].y);
 
-          Eigen::Vector3f pixel_coords = K_ * pt_norm;
-          int u = std::round(pixel_coords.x());
-          int v = std::round(pixel_coords.y());
-
-
-          if (u >= 0 && u < undistorted_image.cols && v >= 0 && v < undistorted_image.rows) {
-              cv::Vec3b color = undistorted_image.at<cv::Vec3b>(v, u);
-              color_point.b = color[0];
-              color_point.g = color[1];
-              color_point.r = color[2];
+              if (u >= 0 && u < cv_image.cols && v >= 0 && v < cv_image.rows) {
+                  const cv::Vec3b& color = cv_image.at<cv::Vec3b>(v, u);
+                  auto& color_point = cloud_out->points[projected_indices[i]];
+                  color_point.b = color[0];
+                  color_point.g = color[1];
+                  color_point.r = color[2];
+              }
           }
-
-
-          cloud_out->points.push_back(color_point);
       }
 
 
@@ -205,8 +210,10 @@ class MinimalSubscriber : public rclcpp::Node
 
 
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
-    Eigen::Matrix3f K_;
-    std::vector<double> D_;
+    cv::Mat camera_matrix_;
+    cv::Mat dist_coeffs_;
+    const cv::Vec3d zero_rotation_{0.0, 0.0, 0.0};
+    const cv::Vec3d zero_translation_{0.0, 0.0, 0.0};
     bool camera_info_received_ = false;
 };
 

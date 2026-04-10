@@ -3,11 +3,21 @@
 <package format="3">
   <name>pointcloud_colorizer</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>ROS 2 nodes for colorizing LiDAR point clouds with synchronized camera imagery.</description>
   <maintainer email="daniil@todo.todo">daniil</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Proprietary</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>cv_bridge</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
+  <depend>message_filters</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
@@ -15,19 +25,4 @@
   <export>
     <build_type>ament_cmake</build_type>
   </export>
-
-  <depend>rclcpp</depend>
-  <depend>std_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>cv_bridge</depend>
-  <depend>tf2_ros</depend>
-  <depend>tf2_eigen</depend>
-  <depend>tf2</depend>             
-  <depend>geometry_msgs</depend>   
-  <depend>message_filters</depend> 
-
-  <build_depend>pcl_msgs</build_depend>
-  <build_depend>pcl_conversions</build_depend>
-  <build_depend>PCL</build_depend>
-
 </package>

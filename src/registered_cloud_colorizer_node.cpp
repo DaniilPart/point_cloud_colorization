@@ -8,6 +8,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <cv_bridge/cv_bridge.hpp>
@@ -54,6 +55,8 @@ public:
 
     publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/colorizer/registered/colored_cloud", 10);
+    map_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/colorizer/registered/naive_map", 10);
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -86,7 +89,7 @@ private:
   void topic_callback(
     const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg,
     const sensor_msgs::msg::CompressedImage::ConstSharedPtr img_msg,
-    const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg) const
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg)
   {
     if (!camera_info_received_) {
       return;
@@ -202,6 +205,24 @@ private:
     pcl::toROSMsg(*cloud_out, msg_out);
     msg_out.header = cloud_msg->header;
     publisher_->publish(msg_out);
+
+    *accumulated_map_ += *cloud_out;
+
+    pcl::VoxelGrid<pcl::PointXYZRGB> voxel_filter;
+    voxel_filter.setInputCloud(accumulated_map_);
+    voxel_filter.setLeafSize(map_voxel_size_, map_voxel_size_, map_voxel_size_);
+
+    auto downsampled_map = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
+    voxel_filter.filter(*downsampled_map);
+    downsampled_map->width = downsampled_map->points.size();
+    downsampled_map->height = 1;
+    downsampled_map->is_dense = true;
+    accumulated_map_ = downsampled_map;
+
+    sensor_msgs::msg::PointCloud2 map_msg;
+    pcl::toROSMsg(*accumulated_map_, map_msg);
+    map_msg.header = cloud_msg->header;
+    map_publisher_->publish(map_msg);
   }
 
   message_filters::Subscriber<nav_msgs::msg::Odometry> odometry_;
@@ -209,6 +230,7 @@ private:
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> registered_cloud_;
   std::shared_ptr<RegisteredSync> sync_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_publisher_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -216,6 +238,9 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   cv::Mat camera_matrix_;
   cv::Mat dist_coeffs_;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr accumulated_map_ =
+    std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
+  const float map_voxel_size_ = 0.1f;
   bool camera_info_received_ = false;
 };
 

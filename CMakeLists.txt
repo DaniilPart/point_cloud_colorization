@@ -7,6 +7,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(pcl_conversions REQUIRED)
@@ -34,6 +35,7 @@ function(add_colorizer_executable target_name source_file)
   ament_target_dependencies(${target_name}
     rclcpp
     sensor_msgs
+    std_msgs
     nav_msgs
     pcl_conversions
     cv_bridge
@@ -51,11 +53,19 @@ endfunction()
 
 add_colorizer_executable(raw_cloud_colorizer src/raw_cloud_colorizer_node.cpp)
 add_colorizer_executable(registered_cloud_colorizer src/registered_cloud_colorizer_node.cpp)
+add_colorizer_executable(unified_cloud_colorizer src/unified_cloud_colorizer_node.cpp)
 
 install(TARGETS
   raw_cloud_colorizer
   registered_cloud_colorizer
+  unified_cloud_colorizer
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  config
+  launch
+  DESTINATION share/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)

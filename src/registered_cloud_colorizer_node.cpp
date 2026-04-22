@@ -1,5 +1,7 @@
 #include <cmath>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -39,11 +41,28 @@ public:
   RegisteredCloudColorizerNode()
   : Node("registered_cloud_colorizer")
   {
+    input_registered_cloud_topic_ = this->declare_parameter<std::string>(
+      "input_registered_cloud_topic", "/liorf/mapping/cloud_registered");
+    input_odometry_topic_ = this->declare_parameter<std::string>(
+      "input_odometry_topic", "/liorf/mapping/odometry");
+    input_image_topic_ = this->declare_parameter<std::string>(
+      "input_image_topic", "/camera_front/image_raw/compressed");
+    camera_info_topic_ = this->declare_parameter<std::string>(
+      "camera_info_topic", "/camera_front/camera_info");
+    output_cloud_topic_ = this->declare_parameter<std::string>(
+      "output_cloud_topic", "/colorizer/registered/colored_cloud");
+    output_map_topic_ = this->declare_parameter<std::string>(
+      "output_map_topic", "/colorizer/registered/naive_map");
+    map_voxel_size_ = static_cast<float>(this->declare_parameter<double>(
+      "map_voxel_size", 0.3));
+    publish_only_colored_points_ = this->declare_parameter<bool>(
+      "publish_only_colored_points", true);
+
     const auto sensor_qos = rmw_qos_profile_sensor_data;
 
-    odometry_.subscribe(this, "/liorf/mapping/odometry", sensor_qos);
-    image_.subscribe(this, "/camera_front/image_raw/compressed", sensor_qos);
-    registered_cloud_.subscribe(this, "/liorf/mapping/cloud_registered", sensor_qos);
+    odometry_.subscribe(this, input_odometry_topic_, sensor_qos);
+    image_.subscribe(this, input_image_topic_, sensor_qos);
+    registered_cloud_.subscribe(this, input_registered_cloud_topic_, sensor_qos);
 
     sync_ = std::make_shared<RegisteredSync>(
       RegisteredSyncPolicy(10),
@@ -54,17 +73,29 @@ public:
       std::bind(&RegisteredCloudColorizerNode::topic_callback, this, _1, _2, _3));
 
     publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-      "/colorizer/registered/colored_cloud", 10);
+      output_cloud_topic_, 10);
     map_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-      "/colorizer/registered/naive_map", 10);
+      output_map_topic_, 10);
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-      "/camera_front/camera_info",
+      camera_info_topic_,
       rclcpp::SensorDataQoS(),
       std::bind(&RegisteredCloudColorizerNode::camera_info_callback, this, std::placeholders::_1));
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Registered colorizer topics: odom=%s image=%s cloud=%s camera_info=%s output_cloud=%s output_map=%s map_voxel_size=%.3f publish_only_colored_points=%s",
+      input_odometry_topic_.c_str(),
+      input_image_topic_.c_str(),
+      input_registered_cloud_topic_.c_str(),
+      camera_info_topic_.c_str(),
+      output_cloud_topic_.c_str(),
+      output_map_topic_.c_str(),
+      map_voxel_size_,
+      publish_only_colored_points_ ? "true" : "false");
   }
 
 private:
@@ -168,6 +199,19 @@ private:
         continue;
       }
 
+      std::size_t output_index = 0;
+      if (!publish_only_colored_points_) {
+        pcl::PointXYZRGB color_point;
+        color_point.x = point.x;
+        color_point.y = point.y;
+        color_point.z = point.z;
+        color_point.r = 128;
+        color_point.g = 128;
+        color_point.b = 128;
+        cloud_out->points.push_back(color_point);
+        output_index = cloud_out->points.size() - 1;
+      }
+
       const Eigen::Vector4f pt_odom(point.x, point.y, point.z, 1.0f);
       const Eigen::Vector4f pt_camera = t_cam_odom * pt_odom;
 
@@ -187,14 +231,21 @@ private:
       }
 
       const cv::Vec3b & color = undistorted_image.at<cv::Vec3b>(pixel_v, pixel_u);
-      pcl::PointXYZRGB color_point;
-      color_point.x = point.x;
-      color_point.y = point.y;
-      color_point.z = point.z;
-      color_point.b = color[0];
-      color_point.g = color[1];
-      color_point.r = color[2];
-      cloud_out->points.push_back(color_point);
+      if (publish_only_colored_points_) {
+        pcl::PointXYZRGB color_point;
+        color_point.x = point.x;
+        color_point.y = point.y;
+        color_point.z = point.z;
+        color_point.b = color[0];
+        color_point.g = color[1];
+        color_point.r = color[2];
+        cloud_out->points.push_back(color_point);
+      } else {
+        auto & color_point = cloud_out->points[output_index];
+        color_point.b = color[0];
+        color_point.g = color[1];
+        color_point.r = color[2];
+      }
     }
 
     cloud_out->width = cloud_out->points.size();
@@ -240,7 +291,14 @@ private:
   cv::Mat dist_coeffs_;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr accumulated_map_ =
     std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
-  const float map_voxel_size_ = 0.1f;
+  std::string input_registered_cloud_topic_;
+  std::string input_odometry_topic_;
+  std::string input_image_topic_;
+  std::string camera_info_topic_;
+  std::string output_cloud_topic_;
+  std::string output_map_topic_;
+  float map_voxel_size_ = 0.3f;
+  bool publish_only_colored_points_ = true;
   bool camera_info_received_ = false;
 };
 

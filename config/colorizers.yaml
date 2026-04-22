@@ -1,0 +1,18 @@
+raw_colorizer:
+  ros__parameters:
+    input_cloud_topic: /os1/points
+    input_image_topic: /camera_front/image_raw/compressed
+    camera_info_topic: /camera_front/camera_info
+    output_cloud_topic: /colorizer/raw/colored_cloud
+    publish_only_colored_points: true
+
+registered_colorizer:
+  ros__parameters:
+    input_registered_cloud_topic: /liorf/mapping/cloud_registered
+    input_odometry_topic: /liorf/mapping/odometry
+    input_image_topic: /camera_front/image_raw/compressed
+    camera_info_topic: /camera_front/camera_info
+    output_cloud_topic: /colorizer/registered/colored_cloud
+    output_map_topic: /colorizer/registered/naive_map
+    map_voxel_size: 0.3
+    publish_only_colored_points: true

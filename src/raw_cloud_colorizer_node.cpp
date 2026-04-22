@@ -1,5 +1,6 @@
 #include <cmath>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
@@ -36,23 +37,43 @@ public:
   RawCloudColorizerNode()
   : Node("raw_cloud_colorizer")
   {
+    input_cloud_topic_ = this->declare_parameter<std::string>(
+      "input_cloud_topic", "/os1/points");
+    input_image_topic_ = this->declare_parameter<std::string>(
+      "input_image_topic", "/camera_front/image_raw/compressed");
+    camera_info_topic_ = this->declare_parameter<std::string>(
+      "camera_info_topic", "/camera_front/camera_info");
+    output_cloud_topic_ = this->declare_parameter<std::string>(
+      "output_cloud_topic", "/colorizer/raw/colored_cloud");
+    publish_only_colored_points_ = this->declare_parameter<bool>(
+      "publish_only_colored_points", true);
+
     const auto sensor_qos = rmw_qos_profile_sensor_data;
 
-    lidar_.subscribe(this, "/os1/points", sensor_qos);
-    camera_.subscribe(this, "/camera_front/image_raw/compressed", sensor_qos);
+    lidar_.subscribe(this, input_cloud_topic_, sensor_qos);
+    camera_.subscribe(this, input_image_topic_, sensor_qos);
     sync_ = std::make_shared<Sync>(MySyncPolicy(10), lidar_, camera_);
     sync_->registerCallback(std::bind(&RawCloudColorizerNode::topic_callback, this, _1, _2));
 
     publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-      "/colorizer/raw/colored_cloud", 10);
+      output_cloud_topic_, 10);
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-      "/camera_front/camera_info",
+      camera_info_topic_,
       rclcpp::SensorDataQoS(),
       std::bind(&RawCloudColorizerNode::camera_info_callback, this, std::placeholders::_1));
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Raw colorizer topics: cloud=%s image=%s camera_info=%s output=%s publish_only_colored_points=%s",
+      input_cloud_topic_.c_str(),
+      input_image_topic_.c_str(),
+      camera_info_topic_.c_str(),
+      output_cloud_topic_.c_str(),
+      publish_only_colored_points_ ? "true" : "false");
   }
 
 private:
@@ -128,12 +149,27 @@ private:
 
     std::vector<cv::Point3f> camera_points;
     std::vector<pcl::PointXYZ> candidate_points;
+    std::vector<std::size_t> projected_indices;
     camera_points.reserve(cloud_in->points.size());
     candidate_points.reserve(cloud_in->points.size());
+    projected_indices.reserve(cloud_in->points.size());
 
     for (const auto & point : cloud_in->points) {
       if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
         continue;
+      }
+
+      std::size_t output_index = 0;
+      if (!publish_only_colored_points_) {
+        pcl::PointXYZRGB color_point;
+        color_point.x = point.x;
+        color_point.y = point.y;
+        color_point.z = point.z;
+        color_point.r = 128;
+        color_point.g = 128;
+        color_point.b = 128;
+        cloud_out->points.push_back(color_point);
+        output_index = cloud_out->points.size() - 1;
       }
 
       Eigen::Vector4f pt_lidar(point.x, point.y, point.z, 1.0f);
@@ -144,7 +180,11 @@ private:
       }
 
       camera_points.emplace_back(pt_camera.x(), pt_camera.y(), pt_camera.z());
-      candidate_points.push_back(point);
+      if (publish_only_colored_points_) {
+        candidate_points.push_back(point);
+      } else {
+        projected_indices.push_back(output_index);
+      }
     }
 
     if (!camera_points.empty()) {
@@ -163,14 +203,21 @@ private:
 
         if (u >= 0 && u < cv_image.cols && v >= 0 && v < cv_image.rows) {
           const cv::Vec3b & color = cv_image.at<cv::Vec3b>(v, u);
-          pcl::PointXYZRGB color_point;
-          color_point.x = candidate_points[i].x;
-          color_point.y = candidate_points[i].y;
-          color_point.z = candidate_points[i].z;
-          color_point.b = color[0];
-          color_point.g = color[1];
-          color_point.r = color[2];
-          cloud_out->points.push_back(color_point);
+          if (publish_only_colored_points_) {
+            pcl::PointXYZRGB color_point;
+            color_point.x = candidate_points[i].x;
+            color_point.y = candidate_points[i].y;
+            color_point.z = candidate_points[i].z;
+            color_point.b = color[0];
+            color_point.g = color[1];
+            color_point.r = color[2];
+            cloud_out->points.push_back(color_point);
+          } else {
+            auto & color_point = cloud_out->points[projected_indices[i]];
+            color_point.b = color[0];
+            color_point.g = color[1];
+            color_point.r = color[2];
+          }
         }
       }
     }
@@ -198,6 +245,11 @@ private:
   cv::Mat dist_coeffs_;
   const cv::Vec3d zero_rotation_{0.0, 0.0, 0.0};
   const cv::Vec3d zero_translation_{0.0, 0.0, 0.0};
+  std::string input_cloud_topic_;
+  std::string input_image_topic_;
+  std::string camera_info_topic_;
+  std::string output_cloud_topic_;
+  bool publish_only_colored_points_ = true;
   bool camera_info_received_ = false;
 };
 

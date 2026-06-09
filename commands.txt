@@ -1,0 +1,69 @@
+# pointcloud_colorizer useful commands
+
+ros2 run rmw_zenoh_cpp rmw_zenohd
+
+ros2 node list | grep colorizer
+
+# 1) Build the package from the ROS 2 workspace root
+cd ~/ros2_ws
+./compile.sh
+
+# Alternative manual build command
+cd ~/ros2_ws
+colcon build --packages-select pointcloud_colorizer --symlink-install
+
+# 2) Source the workspace after build
+source ~/ros2_ws/install/setup.bash
+
+# 3) Check that ROS 2 sees the package
+ros2 pkg list | grep pointcloud_colorizer
+ros2 pkg executables pointcloud_colorizer
+
+# 4) Run the raw node
+source ~/ros2_ws/install/setup.bash
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+ros2 run pointcloud_colorizer raw_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
+
+# 5) Run the registered node
+source ~/ros2_ws/install/setup.bash
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+ros2 run pointcloud_colorizer registered_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
+
+# 6) Check output topics for the raw node
+source ~/ros2_ws/install/setup.bash
+ros2 topic list | grep colorizer
+ros2 topic info /colorizer/raw/colored_cloud
+ros2 topic hz /colorizer/raw/colored_cloud
+ros2 topic echo /colorizer/raw/colored_cloud --field header.frame_id
+
+# 7) Check output topics for the registered node
+source ~/ros2_ws/install/setup.bash
+ros2 topic list | grep colorizer
+ros2 topic info /colorizer/registered/colored_cloud
+ros2 topic hz /colorizer/registered/colored_cloud
+ros2 topic echo /colorizer/registered/colored_cloud --field header.frame_id
+
+# 8) Check that input topics are alive
+source ~/ros2_ws/install/setup.bash
+ros2 topic info /ouster/points --verbose
+ros2 topic info /basler_front/image_raw/compressed --verbose
+ros2 topic info /basler_front/camera_info --verbose
+
+# 9) Play a bag file if you want to test with recorded data
+source ~/ros2_ws/install/setup.bash
+ros2 bag play <your_bag_file>.mcap --clock
+
+# 10) Helpful runtime checks in another terminal
+source ~/ros2_ws/install/setup.bash
+ros2 node list
+ros2 node info /raw_cloud_colorizer
+ros2 node info /registered_cloud_colorizer
+
+# 11) Optional TF checks
+source ~/ros2_ws/install/setup.bash
+ros2 topic echo /tf --once
+ros2 topic echo /tf_static --once
+
+# 12) Launch RViz2 manually
+source ~/ros2_ws/install/setup.bash
+rviz2

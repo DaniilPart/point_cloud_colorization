@@ -26,7 +26,7 @@ The registered pipeline colors incoming registered clouds and accumulates a down
 
 | Executable | Description |
 | --- | --- |
-| `raw_cloud_colorizer` | Colors the raw LiDAR cloud from `/os1/points` |
+| `raw_cloud_colorizer` | Colors the raw LiDAR cloud from the configured `input_cloud_topic` |
 | `registered_cloud_colorizer` | Colors the registered cloud from `/liorf/mapping/cloud_registered` and publishes a naive accumulated map |
 | `unified_cloud_colorizer` | Single configurable node with `mode:=raw` or `mode:=registered` |
 
@@ -125,7 +125,13 @@ Parameter groups:
 - `input_image_topic`
 - `camera_info_topic`
 - `output_cloud_topic`
+- `output_frame_id`
 - `publish_only_colored_points`
+- `transform_source`
+- `camera_frame_id`
+- `lidar_frame_id`
+- `transform_lookup_timeout_sec`
+- `camera_to_lidar_matrix`
 
 ### Registered node
 
@@ -135,8 +141,15 @@ Parameter groups:
 - `camera_info_topic`
 - `output_cloud_topic`
 - `output_map_topic`
+- `output_frame_id`
+- `map_frame_id`
 - `map_voxel_size`
 - `publish_only_colored_points`
+- `transform_source`
+- `camera_frame_id`
+- `lidar_frame_id`
+- `transform_lookup_timeout_sec`
+- `camera_to_lidar_matrix`
 
 ### Unified node
 
@@ -147,9 +160,25 @@ Parameter groups:
 - `input_image_topic`
 - `camera_info_topic`
 - `output_cloud_topic`
+- `raw_output_cloud_topic`
+- `registered_output_cloud_topic`
 - `output_map_topic`
+- `output_frame_id`
+- `raw_output_frame_id`
+- `registered_output_frame_id`
+- `map_frame_id`
 - `map_voxel_size`
 - `publish_only_colored_points`
+- `transform_source`
+- `camera_frame_id`
+- `lidar_frame_id`
+- `transform_lookup_timeout_sec`
+- `camera_to_lidar_matrix`
+
+`transform_source` can be:
+
+- `config`: load `camera_to_lidar_matrix` from the YAML parameter file
+- `tf_tree`: read the transform from TF using `camera_frame_id` and `lidar_frame_id`
 
 ## Run The Dedicated Nodes
 
@@ -173,14 +202,16 @@ ros2 param get /registered_colorizer map_voxel_size
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-ros2 run pointcloud_colorizer raw_cloud_colorizer
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+ros2 run pointcloud_colorizer raw_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
 ```
 
 ### Run the registered node directly
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-ros2 run pointcloud_colorizer registered_cloud_colorizer
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+ros2 run pointcloud_colorizer registered_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
 ```
 
 ## Run The Unified Node
@@ -189,14 +220,16 @@ ros2 run pointcloud_colorizer registered_cloud_colorizer
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args -p mode:=raw
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args --params-file "$PARAMS_FILE" -p mode:=raw
 ```
 
 ### Registered mode
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args -p mode:=registered
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args --params-file "$PARAMS_FILE" -p mode:=registered
 ```
 
 The unified node fails fast if `mode` is not `raw` or `registered`.

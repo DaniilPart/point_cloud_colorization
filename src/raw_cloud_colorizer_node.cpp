@@ -1,7 +1,10 @@
 #include <cmath>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "pointcloud_colorizer/transform_utils.hpp"
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -17,14 +20,14 @@
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
+#include <rmw/qos_profiles.h>
+#include <tf2/exceptions.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
-#include <geometry_msgs/msg/transform_stamped.hpp>
-#include <tf2/exceptions.h>
-#include <rmw/qos_profiles.h>
 
 using std::placeholders::_1;
 using std::placeholders::_2;
+using pointcloud_colorizer::TransformSource;
 
 class RawCloudColorizerNode : public rclcpp::Node
 {
@@ -38,15 +41,31 @@ public:
   : Node("raw_cloud_colorizer")
   {
     input_cloud_topic_ = this->declare_parameter<std::string>(
-      "input_cloud_topic", "/os1/points");
+      "input_cloud_topic", "");
     input_image_topic_ = this->declare_parameter<std::string>(
-      "input_image_topic", "/camera_front/image_raw/compressed");
+      "input_image_topic", "");
     camera_info_topic_ = this->declare_parameter<std::string>(
-      "camera_info_topic", "/camera_front/camera_info");
+      "camera_info_topic", "");
     output_cloud_topic_ = this->declare_parameter<std::string>(
-      "output_cloud_topic", "/colorizer/raw/colored_cloud");
+      "output_cloud_topic", "");
+    output_frame_id_ = this->declare_parameter<std::string>(
+      "output_frame_id", "");
     publish_only_colored_points_ = this->declare_parameter<bool>(
       "publish_only_colored_points", true);
+    transform_source_string_ = this->declare_parameter<std::string>(
+      "transform_source", "config");
+    camera_frame_id_ = this->declare_parameter<std::string>(
+      "camera_frame_id", "");
+    lidar_frame_id_ = this->declare_parameter<std::string>(
+      "lidar_frame_id", "");
+    camera_to_lidar_matrix_values_ = this->declare_parameter<std::vector<double>>(
+      "camera_to_lidar_matrix", std::vector<double>{});
+    transform_lookup_timeout_ = rclcpp::Duration::from_seconds(
+      this->declare_parameter<double>("transform_lookup_timeout_sec", 0.1));
+
+    transform_source_ = pointcloud_colorizer::parse_transform_source(transform_source_string_);
+    validate_configuration();
+    initialize_transform();
 
     const auto sensor_qos = rmw_qos_profile_sensor_data;
 
@@ -58,9 +77,6 @@ public:
     publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       output_cloud_topic_, 10);
 
-    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
-    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
     camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
       camera_info_topic_,
       rclcpp::SensorDataQoS(),
@@ -68,15 +84,51 @@ public:
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Raw colorizer topics: cloud=%s image=%s camera_info=%s output=%s publish_only_colored_points=%s",
+      "Raw colorizer topics: cloud=%s image=%s camera_info=%s output=%s output_frame=%s publish_only_colored_points=%s transform_source=%s",
       input_cloud_topic_.c_str(),
       input_image_topic_.c_str(),
       camera_info_topic_.c_str(),
       output_cloud_topic_.c_str(),
-      publish_only_colored_points_ ? "true" : "false");
+      output_frame_id_.empty() ? "<input>" : output_frame_id_.c_str(),
+      publish_only_colored_points_ ? "true" : "false",
+      transform_source_string_.c_str());
   }
 
 private:
+  void validate_configuration() const
+  {
+    pointcloud_colorizer::require_non_empty(input_cloud_topic_, "input_cloud_topic");
+    pointcloud_colorizer::require_non_empty(input_image_topic_, "input_image_topic");
+    pointcloud_colorizer::require_non_empty(camera_info_topic_, "camera_info_topic");
+    pointcloud_colorizer::require_non_empty(output_cloud_topic_, "output_cloud_topic");
+
+    if (transform_source_ == TransformSource::TfTree) {
+      pointcloud_colorizer::require_non_empty(camera_frame_id_, "camera_frame_id");
+      pointcloud_colorizer::require_non_empty(lidar_frame_id_, "lidar_frame_id");
+    }
+  }
+
+  void initialize_transform()
+  {
+    if (transform_source_ == TransformSource::Config) {
+      camera_to_lidar_transform_ = pointcloud_colorizer::matrix_from_row_major_values(
+        camera_to_lidar_matrix_values_, "camera_to_lidar_matrix");
+      lidar_to_camera_transform_ = camera_to_lidar_transform_.inverse();
+
+      RCLCPP_INFO(this->get_logger(), "Using lidar/camera transform from ROS parameters.");
+      return;
+    }
+
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Using lidar/camera transform from TF tree: target camera_frame_id=%s source lidar_frame_id=%s",
+      camera_frame_id_.c_str(),
+      lidar_frame_id_.c_str());
+  }
+
   void camera_info_callback(const sensor_msgs::msg::CameraInfo::SharedPtr msg)
   {
     if (camera_info_received_) {
@@ -90,9 +142,33 @@ private:
     dist_coeffs_ = cv::Mat(msg->d).clone();
 
     camera_info_received_ = true;
-    RCLCPP_INFO(
-      this->get_logger(),
-      "Camera calibration parameters successfully received and stored.");
+    RCLCPP_INFO(this->get_logger(), "Camera calibration parameters successfully received.");
+  }
+
+  bool get_lidar_to_camera_transform(
+    const rclcpp::Time & stamp,
+    Eigen::Matrix4f & transform) const
+  {
+    if (transform_source_ == TransformSource::Config) {
+      transform = lidar_to_camera_transform_;
+      return true;
+    }
+
+    try {
+      const auto transform_msg = tf_buffer_->lookupTransform(
+        camera_frame_id_,
+        lidar_frame_id_,
+        stamp,
+        transform_lookup_timeout_);
+      transform = pointcloud_colorizer::matrix_from_transform_msg(transform_msg.transform);
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(this->get_logger(), "Could not lookup lidar->camera transform: %s", ex.what());
+      return false;
+    } catch (const std::runtime_error & ex) {
+      RCLCPP_WARN(this->get_logger(), "Invalid lidar->camera transform: %s", ex.what());
+      return false;
+    }
   }
 
   void topic_callback(
@@ -114,35 +190,10 @@ private:
       return;
     }
 
-    geometry_msgs::msg::TransformStamped t;
-    try {
-      t = tf_buffer_->lookupTransform("pylon_camera", "os1/os_lidar", msg->header.stamp);
-    } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN(
-        this->get_logger(),
-        "Could not transform os1/os_lidar to pylon_camera: %s",
-        ex.what());
+    Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
+    if (!get_lidar_to_camera_transform(rclcpp::Time(msg->header.stamp), transform)) {
       return;
     }
-
-    RCLCPP_INFO(
-      this->get_logger(),
-      "Translation vector: [%.3f, %.3f, %.3f]",
-      t.transform.translation.x,
-      t.transform.translation.y,
-      t.transform.translation.z);
-
-    Eigen::Quaternionf q(
-      t.transform.rotation.w,
-      t.transform.rotation.x,
-      t.transform.rotation.y,
-      t.transform.rotation.z);
-
-    Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
-    transform.block<3, 3>(0, 0) = q.toRotationMatrix();
-    transform(0, 3) = t.transform.translation.x;
-    transform(1, 3) = t.transform.translation.y;
-    transform(2, 3) = t.transform.translation.z;
 
     auto cloud_out = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
     cloud_out->points.reserve(cloud_in->points.size());
@@ -229,6 +280,9 @@ private:
     sensor_msgs::msg::PointCloud2 msg_out;
     pcl::toROSMsg(*cloud_out, msg_out);
     msg_out.header = msg->header;
+    if (!output_frame_id_.empty()) {
+      msg_out.header.frame_id = output_frame_id_;
+    }
     publisher_->publish(msg_out);
   }
 
@@ -236,11 +290,10 @@ private:
   message_filters::Subscriber<sensor_msgs::msg::CompressedImage> camera_;
   std::shared_ptr<Sync> sync_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
-
+  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   cv::Mat camera_matrix_;
   cv::Mat dist_coeffs_;
   const cv::Vec3d zero_rotation_{0.0, 0.0, 0.0};
@@ -249,8 +302,17 @@ private:
   std::string input_image_topic_;
   std::string camera_info_topic_;
   std::string output_cloud_topic_;
+  std::string output_frame_id_;
+  std::string transform_source_string_;
+  std::string camera_frame_id_;
+  std::string lidar_frame_id_;
+  std::vector<double> camera_to_lidar_matrix_values_;
+  TransformSource transform_source_ = TransformSource::Config;
+  rclcpp::Duration transform_lookup_timeout_ = rclcpp::Duration::from_seconds(0.1);
   bool publish_only_colored_points_ = true;
   bool camera_info_received_ = false;
+  Eigen::Matrix4f camera_to_lidar_transform_ = Eigen::Matrix4f::Identity();
+  Eigen::Matrix4f lidar_to_camera_transform_ = Eigen::Matrix4f::Identity();
 };
 
 int main(int argc, char * argv[])

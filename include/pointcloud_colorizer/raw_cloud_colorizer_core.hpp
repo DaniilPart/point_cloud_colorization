@@ -27,6 +27,7 @@ struct SkyFilterConfig
 struct RawCloudColorizerCoreConfig
 {
   bool publish_only_colored_points = true;
+  bool pre_cleaning_filter_enabled = true;
   SkyFilterConfig sky_filter;
 
   int debug_point_radius = 2;

@@ -69,6 +69,14 @@ RawCloudColorizerProcessOutput RawCloudColorizerCore::process(
     debug_overlay = input.bgr_image.clone();
   }
 
+  // Cache camera intrinsics and image dimensions for fast frustum culling
+  const double fx = input.camera_matrix.at<double>(0, 0);
+  const double fy = input.camera_matrix.at<double>(1, 1);
+  const double cx = input.camera_matrix.at<double>(0, 2);
+  const double cy = input.camera_matrix.at<double>(1, 2);
+  const int img_cols = input.bgr_image.cols;
+  const int img_rows = input.bgr_image.rows;
+
   std::vector<cv::Point3f> camera_points;
   std::vector<pcl::PointXYZ> candidate_points;
   std::vector<std::size_t> projected_indices;
@@ -102,6 +110,22 @@ RawCloudColorizerProcessOutput RawCloudColorizerCore::process(
     const Eigen::Vector4f pt_camera = input.lidar_to_camera_transform * pt_lidar;
     if (pt_camera.z() <= 0.0F) {
       continue;
+    }
+
+    if (config_.pre_cleaning_filter_enabled) {
+      // Fast pinhole frustum pre-cleaning to skip far out-of-view points early.
+      const float z_inv = 1.0F / pt_camera.z();
+      const int u_approx = static_cast<int>((pt_camera.x() * fx) * z_inv + cx);
+      const int v_approx = static_cast<int>((pt_camera.y() * fy) * z_inv + cy);
+
+      const int margin_x = static_cast<int>(img_cols * 0.10);
+      const int margin_y = static_cast<int>(img_rows * 0.10);
+
+      if (u_approx < -margin_x || u_approx >= img_cols + margin_x ||
+        v_approx < -margin_y || v_approx >= img_rows + margin_y)
+      {
+        continue;
+      }
     }
 
     camera_points.emplace_back(pt_camera.x(), pt_camera.y(), pt_camera.z());

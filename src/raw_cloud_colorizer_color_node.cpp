@@ -81,6 +81,7 @@ public:
     publish_colorized_identity_tf_ = this->declare_parameter<bool>("publish_colorized_identity_tf", true);
     colorized_frame_id_ = this->declare_parameter<std::string>("colorized_frame_id", "colorized_lidar_link");
     publish_only_colored_points_ = this->declare_parameter<bool>("publish_only_colored_points", true);
+    pre_cleaning_filter_enabled_ = this->declare_parameter<bool>("pre_cleaning_filter_enabled", true);
     debug_image_topic_ = this->declare_parameter<std::string>(
       "debug_image_topic", "/colorizer/raw/debug_overlay");
     debug_overlay_point_radius_ = std::max<int>(1, this->declare_parameter<int>("debug_overlay_point_radius", 2));
@@ -169,6 +170,11 @@ public:
       output_cloud_topic_.c_str(),
       output_frame_id_.empty() ? "<input>" : output_frame_id_.c_str(),
       publish_only_colored_points_ ? "true" : "false");
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Pre-cleaning filter is %s",
+      pre_cleaning_filter_enabled_ ? "enabled" : "disabled");
 
     if (debug_image_topic_.empty()) {
       RCLCPP_INFO(this->get_logger(), "Debug image publisher disabled (debug_image_topic is empty)");
@@ -409,6 +415,7 @@ private:
   {
     pointcloud_colorizer::RawCloudColorizerCoreConfig config;
     config.publish_only_colored_points = publish_only_colored_points_;
+    config.pre_cleaning_filter_enabled = pre_cleaning_filter_enabled_;
     config.sky_filter.enabled = sky_filter_enabled_;
     config.sky_filter.region_max_y_fraction = sky_region_max_y_fraction_;
     config.sky_filter.region_invert_y = sky_region_invert_y_;
@@ -611,6 +618,7 @@ private:
   int compressed_detection_count_ = 0;
   bool publish_colorized_identity_tf_ = true;
   bool publish_only_colored_points_ = true;
+  bool pre_cleaning_filter_enabled_ = true;
   bool use_fixed_sync_ = true;
   bool camera_info_received_ = false;
   ImageSource selected_source_ = ImageSource::Unknown;

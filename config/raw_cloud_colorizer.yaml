@@ -10,6 +10,7 @@ raw_cloud_colorizer:
     publish_colorized_identity_tf: true
     colorized_frame_id: colorized_lidar_link
     publish_only_colored_points: true
+    pre_cleaning_filter_enabled: true
     debug_overlay_point_radius: 2
     use_fixed_sync: false
     fixed_sync_image_stream: compressed

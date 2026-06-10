@@ -2,112 +2,91 @@
 
 ROS 2 package for colorizing LiDAR point clouds with synchronized camera images and building a voxelized colored map.
 
-Current architecture uses a split pipeline:
+## Quick Start (Recommended)
 
-1. Color node: projects raw LiDAR points into the image and publishes colored cloud.
-2. Map node: consumes colored cloud and odometry, transforms into odometry frame, aggregates voxel map, publishes map.
 
-## Executables
+Before the map starts appearing, the robot has to move for one meter, or turn a bit - so that liorf produces another keyframe. 
+Alternatively, launch liorf the colorizer
 
-- rclcpp_components component_container_mt (used by launch as the composite container)
-- raw_cloud_colorizer_color (standalone colorizer node)
-- raw_cloud_map_aggregator (standalone map aggregator node)
-- save_map (CLI utility that calls the aggregator save Trigger service)
+Use `reconstruction.launch.py` as the main entrypoint.
 
-## Launch Files
+Build and source:
+```bash
+  ws build pointcloud_colorizer
+  source ~/.bashrc
+```
+Run full reconstruction pipeline (colorizer + aggregator + [RViz]):
+```bash
+  ros2 launch pointcloud_colorizer reconstruction.launch.py [rviz:=false]
+```
 
-Available launch files:
-- launch/colorizers_composed.launch.py
-  - Runs both nodes as composable components in one component_container_mt process.
-- launch/colorizer_only.launch.py
-  - Runs only the standalone colorization node executable.
-- launch/aggregator_only.launch.py
-  - Runs only the standalone map aggregator node executable.
+For the default input topics, ensure liorf is up and running:
+```bash
+  ros2 node list | grep liorf
+```
+Even though you can take the pcl, image and odometry topics from any source, liorf is the one tested.
 
-Examples:
+## Day-To-Day Usage
 
-Run composed pipeline with RViz (default):
-  ros2 launch pointcloud_colorizer colorizers_composed.launch.py
+Map saving (manual service call):
 
-Run only colorization:
-  ros2 launch pointcloud_colorizer colorizer_only.launch.py
+- `ros2 run pointcloud_colorizer save_map`
 
-Run only map aggregator:
-  ros2 launch pointcloud_colorizer aggregator_only.launch.py
+Named/path-based map save:
 
-Disable RViz on any launch file:
-  ros2 launch pointcloud_colorizer <launch_file>.launch.py rviz:=false
-
-## Config Files
-
-- config/raw_cloud_colorizer.yaml
-  - Parameters for color node (raw cloud + image + camera info -> colored cloud)
-- config/colored_cloud_map_aggregator.yaml
-  - Parameters for map aggregator (colored cloud + odometry -> naive_map)
-  - Includes periodic PLY save controls:
-    - `map_save_interval_sec` (default `5.0`)
-      - Set to `0.0` to disable periodic saving.
-    - `map_save_ply_path` (output PLY file path)
-    - `map_save_append_start_timestamp` (default `true`, appends experiment start time to filename)
-    - `map_save_service_name` (default `~/save_map`, resolved under node namespace/name)
-
-Manual map save:
-- Set `map_save_interval_sec: 0.0` when you want periodic saving disabled and service-only saving.
-- Run `ros2 run pointcloud_colorizer save_map` to trigger save via service.
-- Service auto-discovery prefers node-scoped save services and may resolve to `/colored_cloud_map_aggregator/save_map` or namespaced equivalents.
-- Override service and timeout when needed:
-  `ros2 run pointcloud_colorizer save_map --service /my_ns/colored_cloud_map_aggregator/save_map --timeout 10`
-
-Named/Path-based map save:
 - `ros2 run pointcloud_colorizer save_map run1`
-  - Saves as `run1_YYYYMMDD_HHMMSS.ply` in the configured output directory.
+  - Saves as `run1_YYYYMMDD_HHMMSS.ply` in configured output directory.
 - `ros2 run pointcloud_colorizer save_map /tmp/my_map.ply`
   - Saves exactly to `/tmp/my_map.ply` (no timestamp appended).
 - `ros2 run pointcloud_colorizer save_map /tmp/maps/`
-  - Treats argument as output folder and saves `<configured_base_name>_YYYYMMDD_HHMMSS.ply` inside that folder.
+  - Treats argument as output folder and saves `<configured_base_name>_YYYYMMDD_HHMMSS.ply` in that folder.
 
-## Main Topics
+## Configuration
 
-Inputs:
-- /liorf/deskew/cloud_deskewed
-- /basler_front/image_color/compressed
-- /basler_front/camera_info
-- /liorf/mapping/odometry
+### Raw colorizer config: `config/raw_cloud_colorizer.yaml`
 
-Outputs:
-- /colorizer/raw/colored_cloud
-- /colorizer/raw/naive_map
+#### Input pointcloud topic (sensor frame)
+- `input_cloud_topic`: pointcloud topic used
+  - `/liorf/mapping/keyframes/cloud_deskewed_downsampled` (default) is good for performance.
+  - `/liorf/deskew/cloud_deskewed` is the full deskewed cloud topic, but may be too dense and too frequent.
+    - if using this topic, increase `min_processing_interval_sec` to prevent overload. 
+  - `min_processing_interval_sec` throttles processing frequency (default 0.0).
 
-## Build
+#### Input image topic
+- The node automatically selects if to use compressed or raw image topics based on availability, prioritizing raw if both are present.
+  - `input_image_topic_raw` is the primary image topic parameter.
+  - If `input_image_topic_compressed` is empty, it is auto-derived as `input_image_topic_raw + "/compressed"`.
 
-From workspace root:
+#### LiDAR-camera transform
+- The transformation is either looked up from TF or taken from the config parameters, based on `transform_source`.
+- If using TF, ensure the transform is being published by your system (e.g. static transform publisher or robot_state_publisher).
+- If using config, set the `camera_to_lidar_matrix` parameter to the 4x4 homogeneous transformation matrix from camera frame to LiDAR frame.
 
-  colcon build --packages-select pointcloud_colorizer --symlink-install
-  source install/setup.bash
+Getting the transformation:
+```
+ros2 run tf2_ros tf2_echo --frame1 pylon_camera --frame2 os_lidar
+```
 
-Check package presence:
+### Aggregator config: `config/colored_cloud_map_aggregator.yaml`
 
-  ros2 pkg list | grep pointcloud_colorizer
+- `map_save_interval_sec` controls periodic save interval (set `0.0` to disable periodic saving).
+  - Do this if suspect the performance issues, although it should not
+- 
 
-## Components
+## Map saving
 
-The two runtime nodes are loaded as components into one process container:
+- Map saving is triggered by a ROS service call. Use `ros2 run pointcloud_colorizer save_map` to trigger a save on demand.
+- The map is also saved every 5 seconds by default, but you can disable this by setting `map_save_interval_sec` to `0.0` in the aggregator config.
 
-- RawCloudColorizerColorNode
-- ColoredCloudMapAggregatorNode
+## Map processing and visualization
+This takes under 1 minute, but requires dependency installation. Follow the MAP_VISUALIZATION.md.
 
-Launch file colorizers.launch.py loads both components into a single component_container_mt.
 
-## RViz
+## Running from the bagfile
+Example bagfile playing:
+```bash
+ros2 bag play recording_20260423_153545 --topics \
+ /basler_front/camera_info /basler_front/image_color/compressed /ouster/imu /ouster/points /tf_static \
+ --clock
+```
 
-RViz config file is installed with the package:
-- rviz/colorizer.rviz
-
-Manual run:
-
-  rviz2 -d $(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/rviz/colorizer.rviz
-
-## Notes
-
-- Legacy monolithic nodes and their configs have been removed from the build and source tree.
-- If old processes are still running from previous sessions, restart terminals and relaunch.

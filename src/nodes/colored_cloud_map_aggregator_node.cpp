@@ -17,6 +17,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/io/ply_io.h>
@@ -26,6 +27,7 @@
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
 #include <rmw/qos_profiles.h>
+#include <tf2_ros/transform_broadcaster.h>
 
 using std::placeholders::_1;
 using std::placeholders::_2;
@@ -52,6 +54,10 @@ public:
     map_save_append_start_timestamp_ = this->declare_parameter<bool>(
       "map_save_append_start_timestamp", true);
     map_save_service_name_ = this->declare_parameter<std::string>("map_save_service_name", "~/save_map");
+    publish_odom_to_lidar_reg_col_tf_ = this->declare_parameter<bool>(
+      "publish_odom_to_lidar_reg_col_tf", true);
+    lidar_reg_col_frame_id_ = this->declare_parameter<std::string>(
+      "lidar_reg_col_frame_id", "lidar_reg_col");
     sync_queue_size_ = std::max<int>(1, this->declare_parameter<int>("sync_queue_size", 10));
 
     color_burnin_samples_ = this->declare_parameter<int>("color_burnin_samples", 5);
@@ -80,6 +86,10 @@ public:
     core_config.map_builder.estimator.hash_initial_capacity = color_hash_initial_capacity_;
     core_config.map_builder.estimator.hash_max_load_factor = color_hash_max_load_factor_;
     aggregator_core_ = std::make_unique<pointcloud_colorizer::ColoredCloudMapAggregatorCore>(core_config);
+
+    if (publish_odom_to_lidar_reg_col_tf_) {
+      odom_to_lidar_tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    }
 
     const auto sensor_qos = rmw_qos_profile_sensor_data;
     odometry_.subscribe(this, input_odometry_topic_, sensor_qos);
@@ -130,6 +140,13 @@ public:
         map_save_interval_sec_,
         map_save_service_name_.c_str());
     }
+
+    if (publish_odom_to_lidar_reg_col_tf_) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Publishing TF odom->%s from synchronized odometry messages.",
+        lidar_reg_col_frame_id_.c_str());
+    }
   }
 
 private:
@@ -147,6 +164,10 @@ private:
       throw std::runtime_error("map_save_interval_sec must be >= 0");
     }
 
+    if (publish_odom_to_lidar_reg_col_tf_) {
+      pointcloud_colorizer::require_non_empty(lidar_reg_col_frame_id_, "lidar_reg_col_frame_id");
+    }
+
     pointcloud_colorizer::require_non_empty(map_save_ply_path_, "map_save_ply_path");
   }
 
@@ -154,6 +175,8 @@ private:
     const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg,
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr colored_cloud_msg)
   {
+    publish_odom_to_lidar_reg_col_tf(*odom_msg);
+
     auto cloud_in = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
     pcl::fromROSMsg(*colored_cloud_msg, *cloud_in);
 
@@ -166,6 +189,32 @@ private:
         "Skipping synchronized callback: %s",
         error_message.c_str());
     }
+  }
+
+  void publish_odom_to_lidar_reg_col_tf(const nav_msgs::msg::Odometry & odom_msg)
+  {
+    if (!publish_odom_to_lidar_reg_col_tf_ || !odom_to_lidar_tf_broadcaster_) {
+      return;
+    }
+
+    if (odom_msg.header.frame_id.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        3000,
+        "Skipping TF publish odom->%s: odometry header frame_id is empty.",
+        lidar_reg_col_frame_id_.c_str());
+      return;
+    }
+
+    geometry_msgs::msg::TransformStamped tf_msg;
+    tf_msg.header = odom_msg.header;
+    tf_msg.child_frame_id = lidar_reg_col_frame_id_;
+    tf_msg.transform.translation.x = odom_msg.pose.pose.position.x;
+    tf_msg.transform.translation.y = odom_msg.pose.pose.position.y;
+    tf_msg.transform.translation.z = odom_msg.pose.pose.position.z;
+    tf_msg.transform.rotation = odom_msg.pose.pose.orientation;
+    odom_to_lidar_tf_broadcaster_->sendTransform(tf_msg);
   }
 
   void map_publish_timer_callback()
@@ -326,6 +375,7 @@ private:
   rclcpp::TimerBase::SharedPtr map_publish_timer_;
   rclcpp::TimerBase::SharedPtr map_save_timer_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_service_;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> odom_to_lidar_tf_broadcaster_;
 
   std::unique_ptr<pointcloud_colorizer::ColoredCloudMapAggregatorCore> aggregator_core_;
 
@@ -340,6 +390,8 @@ private:
   std::string map_save_ply_path_;
   bool map_save_append_start_timestamp_ = true;
   std::string map_save_service_name_;
+  bool publish_odom_to_lidar_reg_col_tf_ = true;
+  std::string lidar_reg_col_frame_id_ = "lidar_reg_col";
   std::string experiment_start_timestamp_;
   std::string resolved_map_save_ply_path_;
   int sync_queue_size_ = 10;

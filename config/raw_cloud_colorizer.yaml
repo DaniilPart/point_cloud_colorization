@@ -2,9 +2,9 @@ raw_cloud_colorizer:
   ros__parameters:
     input_cloud_topic: /liorf/mapping/keyframes/cloud_deskewed_downsampled
     # If input_image_topic_compressed is empty, it is derived automatically as input_image_topic_raw + "/compressed".
-    input_image_topic_raw: /camera_front/image_raw
+    camera_info_topic: /basler_front/camera_info
+    input_image_topic_raw: /basler_front/image_color
     input_image_topic_compressed: ""
-    camera_info_topic: /camera_front/camera_info
     output_cloud_topic: /colorizer/raw/colored_cloud
     debug_image_topic: /colorizer/raw/debug_overlay
     output_frame_id: ""
@@ -19,7 +19,7 @@ raw_cloud_colorizer:
     source_selector_max_wait_sec: 0.5
     transform_source: config
     camera_frame_id: pylon_camera
-    lidar_frame_id: os1/os_lidar
+    lidar_frame_id: os_lidar
     transform_lookup_timeout_sec: 0.1
     sync_queue_size: 10
     min_processing_interval_sec: 0.0

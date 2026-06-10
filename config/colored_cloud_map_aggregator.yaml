@@ -9,6 +9,8 @@ colored_cloud_map_aggregator:
     map_save_interval_sec: 5.0
     map_save_append_start_timestamp: true
     map_save_service_name: ~/save_map
+    publish_odom_to_lidar_reg_col_tf: true
+    lidar_reg_col_frame_id: lidar_reg_col
     map_save_ply_path: /home/seva/colored_cloud_map.ply
     sync_queue_size: 10
     color_burnin_samples: 5

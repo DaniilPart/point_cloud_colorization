@@ -24,7 +24,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: Scan Colored
+    SyncSource: Map Colored
 Visualization Manager:
   Class: ""
   Displays:
@@ -129,7 +129,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: colorized_lidar_link
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:
@@ -172,7 +172,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 39.75741195678711
+      Distance: 85.6095199584961
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1

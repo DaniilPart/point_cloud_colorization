@@ -11,7 +11,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     package_share = get_package_share_directory('pointcloud_colorizer')
     map_params_file = os.path.join(package_share, 'config', 'colored_cloud_map_aggregator.yaml')
-    rviz_config_file = os.path.join(package_share, 'rviz', 'colorizer.rviz')
+    rviz_config_file = os.path.join(package_share, 'rviz', 'reconstruction.rviz')
 
     rviz_arg = DeclareLaunchArgument(
         'rviz',

@@ -7,6 +7,8 @@ raw_cloud_colorizer:
     output_cloud_topic: /colorizer/raw/colored_cloud
     debug_image_topic: /colorizer/raw/debug_overlay
     output_frame_id: ""
+    publish_colorized_identity_tf: true
+    colorized_frame_id: colorized_lidar_link
     publish_only_colored_points: true
     debug_overlay_point_radius: 2
     use_fixed_sync: false

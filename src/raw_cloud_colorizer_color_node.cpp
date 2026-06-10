@@ -16,6 +16,7 @@
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/header.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 
 #include <Eigen/Dense>
 #include <cv_bridge/cv_bridge.hpp>
@@ -29,6 +30,7 @@
 #include <rmw/qos_profiles.h>
 #include <tf2/exceptions.h>
 #include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 
 using std::placeholders::_1;
@@ -76,6 +78,8 @@ public:
     camera_info_topic_ = this->declare_parameter<std::string>("camera_info_topic", "");
     output_cloud_topic_ = this->declare_parameter<std::string>("output_cloud_topic", "");
     output_frame_id_ = this->declare_parameter<std::string>("output_frame_id", "");
+    publish_colorized_identity_tf_ = this->declare_parameter<bool>("publish_colorized_identity_tf", true);
+    colorized_frame_id_ = this->declare_parameter<std::string>("colorized_frame_id", "colorized_lidar_link");
     publish_only_colored_points_ = this->declare_parameter<bool>("publish_only_colored_points", true);
     debug_image_topic_ = this->declare_parameter<std::string>(
       "debug_image_topic", "/colorizer/raw/debug_overlay");
@@ -127,6 +131,9 @@ public:
     validate_configuration();
     initialize_core();
     initialize_transform();
+    if (publish_colorized_identity_tf_) {
+      colorized_tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    }
 
     output_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_cloud_topic_, 10);
     
@@ -168,6 +175,15 @@ public:
     } else {
       RCLCPP_INFO(this->get_logger(), "Debug image topic: %s", debug_image_topic_.c_str());
     }
+
+    if (publish_colorized_identity_tf_) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Publishing identity TF link from input cloud frame to %s",
+        colorized_frame_id_.c_str());
+    } else {
+      RCLCPP_INFO(this->get_logger(), "Identity TF publishing disabled");
+    }
   }
 
 private:
@@ -191,6 +207,10 @@ private:
       pointcloud_colorizer::require_non_empty(lidar_frame_id_, "lidar_frame_id");
     }
 
+    if (publish_colorized_identity_tf_) {
+      pointcloud_colorizer::require_non_empty(colorized_frame_id_, "colorized_frame_id");
+    }
+
     if (sky_region_max_y_fraction_ <= 0.0 || sky_region_max_y_fraction_ > 1.0) {
       throw std::runtime_error("sky_region_max_y_fraction must be in (0, 1]");
     }
@@ -204,6 +224,38 @@ private:
     {
       throw std::runtime_error("sky HSV thresholds must be in [0, 255]");
     }
+  }
+
+  void publish_identity_colorized_tf(const std_msgs::msg::Header & source_header)
+  {
+    if (!publish_colorized_identity_tf_ || !colorized_tf_broadcaster_) {
+      return;
+    }
+
+    if (source_header.frame_id.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        5000,
+        "Skipping identity TF publish because source cloud frame is empty.");
+      return;
+    }
+
+    if (source_header.frame_id == colorized_frame_id_) {
+      return;
+    }
+
+    geometry_msgs::msg::TransformStamped tf_msg;
+    tf_msg.header = source_header;
+    tf_msg.child_frame_id = colorized_frame_id_;
+    tf_msg.transform.translation.x = 0.0;
+    tf_msg.transform.translation.y = 0.0;
+    tf_msg.transform.translation.z = 0.0;
+    tf_msg.transform.rotation.x = 0.0;
+    tf_msg.transform.rotation.y = 0.0;
+    tf_msg.transform.rotation.z = 0.0;
+    tf_msg.transform.rotation.w = 1.0;
+    colorized_tf_broadcaster_->sendTransform(tf_msg);
   }
 
   static bool ends_with(const std::string & value, const std::string & suffix)
@@ -501,6 +553,8 @@ private:
       output_msg.header.frame_id = output_frame_id_;
     }
 
+    publish_identity_colorized_tf(cloud_msg->header);
+
     output_publisher_->publish(output_msg);
 
     if (publish_debug_overlay && process_output.has_debug_overlay) {
@@ -526,6 +580,7 @@ private:
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> colorized_tf_broadcaster_;
 
   cv::Mat camera_matrix_;
   cv::Mat dist_coeffs_;
@@ -539,6 +594,7 @@ private:
   std::string output_cloud_topic_;
   std::string debug_image_topic_;
   std::string output_frame_id_;
+  std::string colorized_frame_id_;
   std::string transform_source_string_;
   std::string camera_frame_id_;
   std::string lidar_frame_id_;
@@ -553,6 +609,7 @@ private:
   int source_selector_max_compressed_frames_ = 10;
   int debug_overlay_point_radius_ = 2;
   int compressed_detection_count_ = 0;
+  bool publish_colorized_identity_tf_ = true;
   bool publish_only_colored_points_ = true;
   bool use_fixed_sync_ = true;
   bool camera_info_received_ = false;

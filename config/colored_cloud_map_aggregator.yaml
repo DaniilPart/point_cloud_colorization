@@ -1,0 +1,15 @@
+colored_cloud_map_aggregator:
+  ros__parameters:
+    input_colored_cloud_topic: /colorizer/raw/colored_cloud
+    input_odometry_topic: /liorf/mapping/odometry
+    output_map_topic: /colorizer/raw/naive_map
+    map_frame_id: ""
+    map_voxel_size: 0.3
+    map_publish_interval_sec: 1.0
+    sync_queue_size: 10
+    color_burnin_samples: 5
+    color_step_max: 16
+    color_ignore_placeholder_gray: true
+    placeholder_gray_value: 128
+    color_hash_initial_capacity: 262144
+    color_hash_max_load_factor: 0.7

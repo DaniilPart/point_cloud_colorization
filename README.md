@@ -1,365 +1,87 @@
 # pointcloud_colorizer
 
-ROS 2 package for colorizing LiDAR point clouds with synchronized camera images.
+ROS 2 package for colorizing LiDAR point clouds with synchronized camera images and building a voxelized colored map.
 
-The repository contains:
+Current architecture uses a split pipeline:
 
-- a raw pipeline for coloring the current LiDAR scan
-- a registered pipeline for coloring the SLAM-registered cloud
-- a unified node that can run in either mode
-
-## Demo
-
-### Raw Point Cloud Colorization
-
-The current LiDAR scan is projected into the camera image and receives RGB values from the image.
-
-![Raw colored point cloud demo](data/demo.gif)
-
-### Registered Map Accumulation
-
-The registered pipeline colors incoming registered clouds and accumulates a downsampled map over time.
-
-![Registered map accumulation demo](data/prew_fast.gif)
+1. Color node: projects raw LiDAR points into the image and publishes colored cloud.
+2. Map node: consumes colored cloud and odometry, transforms into odometry frame, aggregates voxel map, publishes map.
 
 ## Executables
 
-| Executable | Description |
-| --- | --- |
-| `raw_cloud_colorizer` | Colors the raw LiDAR cloud from the configured `input_cloud_topic` |
-| `registered_cloud_colorizer` | Colors the registered cloud from `/liorf/mapping/cloud_registered` and publishes a naive accumulated map |
-| `unified_cloud_colorizer` | Single configurable node with `mode:=raw` or `mode:=registered` |
+- pointcloud_colorizer raw_cloud_colorizer_color
+- pointcloud_colorizer raw_cloud_map_aggregator
 
-## Output Topics
+## Default Launch
 
-| Topic | Meaning |
-| --- | --- |
-| `/colorizer/raw/colored_cloud` | Current colored raw LiDAR scan |
-| `/colorizer/registered/colored_cloud` | Current colored registered scan in the global frame |
-| `/colorizer/registered/naive_map` | Accumulated downsampled registered map |
+Main launch file:
+- launch/colorizers.launch.py
 
-## Requirements
+What it starts:
+- node name raw_cloud_colorizer, executable raw_cloud_colorizer_color
+- node name colored_cloud_map_aggregator, executable raw_cloud_map_aggregator
+- optional rviz2 controlled by launch arg rviz (default true)
 
-Tested on:
+Examples:
 
-- ROS 2 Jazzy
-- Ubuntu Linux
+Launch with RViz (default):
+  ros2 launch pointcloud_colorizer colorizers.launch.py
 
-Main dependencies:
+Launch without RViz:
+  ros2 launch pointcloud_colorizer colorizers.launch.py rviz:=false
 
-- `rclcpp`
-- `sensor_msgs`
-- `std_msgs`
-- `nav_msgs`
-- `message_filters`
-- `tf2`
-- `tf2_ros`
-- `cv_bridge`
-- `OpenCV`
-- `PCL`
+## Config Files
 
-## Workspace Layout
+- config/raw_cloud_colorizer.yaml
+  - Parameters for color node (raw cloud + image + camera info -> colored cloud)
+- config/colored_cloud_map_aggregator.yaml
+  - Parameters for map aggregator (colored cloud + odometry -> naive_map)
 
-Expected workspace structure:
+## Main Topics
 
-```text
-~/ros2_ws/
-├── src/
-│   └── pointcloud_colorizer/
-└── compile.sh
-```
+Inputs:
+- /liorf/deskew/cloud_deskewed
+- /basler_front/image_color/compressed
+- /basler_front/camera_info
+- /liorf/mapping/odometry
 
-Recommended `compile.sh`:
-
-```bash
-#!/usr/bin/env bash
-set -e
-cd ~/ros2_ws
-colcon build --packages-select pointcloud_colorizer --symlink-install
-```
-
-Make it executable once:
-
-```bash
-chmod +x ~/ros2_ws/compile.sh
-```
+Outputs:
+- /colorizer/raw/colored_cloud
+- /colorizer/raw/naive_map
 
 ## Build
 
-```bash
-cd ~/ros2_ws
-./compile.sh
-source ~/ros2_ws/install/setup.bash
-```
+From workspace root:
 
-Verify the package:
+  colcon build --packages-select pointcloud_colorizer --symlink-install
+  source install/setup.bash
 
-```bash
-ros2 pkg list | grep pointcloud_colorizer
-ros2 pkg executables pointcloud_colorizer
-```
+Check executables:
 
-Expected executables:
+  ros2 pkg executables pointcloud_colorizer
 
-```text
-pointcloud_colorizer raw_cloud_colorizer
-pointcloud_colorizer registered_cloud_colorizer
-pointcloud_colorizer unified_cloud_colorizer
-```
+## Run Nodes Directly
 
-## Configuration
+Color node:
 
-Parameters are split per node:
+  PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/raw_cloud_colorizer.yaml
+  ros2 run pointcloud_colorizer raw_cloud_colorizer_color --ros-args --params-file "$PARAMS_FILE"
 
-- `config/registered_cloud_colorizer.yaml`
-- `config/raw_cloud_colorizer.yaml`
-- `config/unified_cloud_colorizer.yaml`
+Map aggregator node:
 
-Launch files are also split per node:
+  PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colored_cloud_map_aggregator.yaml
+  ros2 run pointcloud_colorizer raw_cloud_map_aggregator --ros-args --params-file "$PARAMS_FILE"
 
-- `launch/colorizers.launch.py` (main default, launches registered pipeline)
-- `launch/registered_cloud_colorizer.launch.py`
-- `launch/raw_cloud_colorizer.launch.py`
-- `launch/unified_cloud_colorizer.launch.py`
+## RViz
 
-Parameter groups:
+RViz config file is installed with the package:
+- rviz/colorizer.rviz
 
-### Raw node
+Manual run:
 
-- `input_cloud_topic`
-- `input_image_topic`
-- `camera_info_topic`
-- `output_cloud_topic`
-- `output_frame_id`
-- `publish_only_colored_points`
-- `transform_source`
-- `camera_frame_id`
-- `lidar_frame_id`
-- `transform_lookup_timeout_sec`
-- `camera_to_lidar_matrix`
+  rviz2 -d $(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/rviz/colorizer.rviz
 
-### Registered node
+## Notes
 
-- `input_registered_cloud_topic`
-- `input_odometry_topic`
-- `input_image_topic`
-- `camera_info_topic`
-- `output_cloud_topic`
-- `output_map_topic`
-- `output_frame_id`
-- `map_frame_id`
-- `map_voxel_size`
-- `publish_only_colored_points`
-- `transform_source`
-- `camera_frame_id`
-- `lidar_frame_id`
-- `transform_lookup_timeout_sec`
-- `camera_to_lidar_matrix`
-
-### Unified node
-
-- `mode`
-- `input_cloud_topic`
-- `input_registered_cloud_topic`
-- `input_odometry_topic`
-- `input_image_topic`
-- `camera_info_topic`
-- `output_cloud_topic`
-- `raw_output_cloud_topic`
-- `registered_output_cloud_topic`
-- `output_map_topic`
-- `output_frame_id`
-- `raw_output_frame_id`
-- `registered_output_frame_id`
-- `map_frame_id`
-- `map_voxel_size`
-- `publish_only_colored_points`
-- `transform_source`
-- `camera_frame_id`
-- `lidar_frame_id`
-- `transform_lookup_timeout_sec`
-- `camera_to_lidar_matrix`
-
-`transform_source` can be:
-
-- `config`: load `camera_to_lidar_matrix` from the YAML parameter file
-- `tf_tree`: read the transform from TF using `camera_frame_id` and `lidar_frame_id`
-
-## Run The Dedicated Nodes
-
-### Start the main registered pipeline (default)
-
-```bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch pointcloud_colorizer colorizers.launch.py
-```
-
-You can verify the loaded parameters with:
-
-```bash
-ros2 node list | grep colorizer
-ros2 param list /registered_cloud_colorizer
-ros2 param get /registered_cloud_colorizer map_voxel_size
-```
-
-### Launch the registered node explicitly
-
-```bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch pointcloud_colorizer registered_cloud_colorizer.launch.py
-```
-
-### Launch the raw node explicitly
-
-```bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch pointcloud_colorizer raw_cloud_colorizer.launch.py
-```
-
-### Run the raw node directly
-
-```bash
-source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/raw_cloud_colorizer.yaml
-ros2 run pointcloud_colorizer raw_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
-```
-
-### Run the registered node directly
-
-```bash
-source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/registered_cloud_colorizer.yaml
-ros2 run pointcloud_colorizer registered_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
-```
-
-## Run The Unified Node
-
-### Raw mode
-
-```bash
-source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/unified_cloud_colorizer.yaml
-ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args --params-file "$PARAMS_FILE" -p mode:=raw
-```
-
-### Registered mode
-
-```bash
-source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/unified_cloud_colorizer.yaml
-ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args --params-file "$PARAMS_FILE" -p mode:=registered
-```
-
-### Launch unified with launch arguments
-
-```bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch pointcloud_colorizer unified_cloud_colorizer.launch.py mode:=raw
-ros2 launch pointcloud_colorizer unified_cloud_colorizer.launch.py mode:=registered
-```
-
-The unified node fails fast if `mode` is not `raw` or `registered`.
-
-## Visualizing In RViz2
-
-Start RViz2:
-
-```bash
-source ~/ros2_ws/install/setup.bash
-rviz2
-```
-
-Recommended displays:
-
-### Raw pipeline
-
-- `Fixed Frame`: `os1/os_lidar`
-- add `PointCloud2`
-- topic: `/colorizer/raw/colored_cloud`
-- `Color Transformer`: `RGB8`
-
-### Registered pipeline
-
-- `Fixed Frame`: `odom`
-- add `PointCloud2`
-- topic: `/colorizer/registered/colored_cloud`
-- add another `PointCloud2`
-- topic: `/colorizer/registered/naive_map`
-- `Color Transformer`: `RGB8`
-
-## Useful Commands
-
-```bash
-source ~/ros2_ws/install/setup.bash
-ros2 node list | grep colorizer
-ros2 topic list | grep /colorizer/
-ros2 topic info /colorizer/raw/colored_cloud
-ros2 topic info /colorizer/registered/colored_cloud
-ros2 topic info /colorizer/registered/naive_map
-```
-
-If you use Zenoh middleware:
-
-```bash
-ros2 run rmw_zenoh_cpp rmw_zenohd
-```
-
-If it says `Address already in use`, the router is usually already running.
-
-## Troubleshooting
-
-### RViz shows the topic but nothing is visible
-
-Check:
-
-- the correct `Fixed Frame`
-- the correct topic
-- `Color Transformer` set to `RGB8`
-- old nodes are not still running
-
-### A raw topic appears while testing a registered setup
-
-Usually this means:
-
-- another raw node is still running
-- or RViz is still subscribed to the raw topic
-
-Useful commands:
-
-```bash
-ros2 node list | grep colorizer
-ros2 topic info /colorizer/raw/colored_cloud --verbose
-```
-
-### TF_OLD_DATA warnings
-
-This usually happens when the same bag was replayed multiple times without stopping old nodes.
-
-Clean restart:
-
-```bash
-pkill -f raw_cloud_colorizer
-pkill -f registered_cloud_colorizer
-pkill -f unified_cloud_colorizer
-pkill -f "ros2 bag play"
-```
-
-## Repository Files
-
-Main source files:
-
-- `src/raw_cloud_colorizer_node.cpp`
-- `src/registered_cloud_colorizer_node.cpp`
-- `src/unified_cloud_colorizer_node.cpp`
-
-Support files:
-
-- `config/raw_cloud_colorizer.yaml`
-- `config/registered_cloud_colorizer.yaml`
-- `config/unified_cloud_colorizer.yaml`
-- `launch/colorizers.launch.py`
-- `launch/raw_cloud_colorizer.launch.py`
-- `launch/registered_cloud_colorizer.launch.py`
-- `launch/unified_cloud_colorizer.launch.py`
-- `data/demo.gif`
-- `data/prew_fast.gif`
+- Legacy monolithic nodes and their configs have been removed from the build and source tree.
+- If old processes are still running from previous sessions, restart terminals and relaunch.

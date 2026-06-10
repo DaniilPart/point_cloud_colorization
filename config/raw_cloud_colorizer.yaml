@@ -1,7 +1,7 @@
 raw_cloud_colorizer:
   ros__parameters:
-    input_cloud_topic: /ouster/points
-    input_image_topic: /basler_front/image_raw/compressed
+    input_cloud_topic: /liorf/deskew/cloud_deskewed
+    input_image_topic: /basler_front/image_color/compressed
     camera_info_topic: /basler_front/camera_info
     output_cloud_topic: /colorizer/raw/colored_cloud
     output_frame_id: ""
@@ -10,6 +10,7 @@ raw_cloud_colorizer:
     camera_frame_id: pylon_camera
     lidar_frame_id: os1/os_lidar
     transform_lookup_timeout_sec: 0.1
+    sync_queue_size: 10
     camera_to_lidar_matrix: [
       0.019, 0.0, -1.0, -0.058,
       -1.0, 0.0, -0.019, -0.001,

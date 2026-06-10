@@ -17,7 +17,6 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
-find_package(diagnostic_msgs REQUIRED)
 
 find_package(PCL REQUIRED)
 
@@ -44,7 +43,6 @@ function(add_colorizer_executable target_name)
     tf2
     geometry_msgs
     message_filters
-    diagnostic_msgs
   )
 
   target_link_libraries(${target_name}
@@ -53,24 +51,24 @@ function(add_colorizer_executable target_name)
   )
 endfunction()
 
-add_colorizer_executable(raw_cloud_colorizer src/raw_cloud_colorizer_node.cpp)
+add_colorizer_executable(raw_cloud_colorizer_color src/raw_cloud_colorizer_color_node.cpp)
 add_colorizer_executable(
-  registered_cloud_colorizer
-  src/registered_cloud_colorizer_node.cpp
+  raw_cloud_map_aggregator
+  src/colored_cloud_map_aggregator_node.cpp
   src/voxel_color_estimator.cpp
+  src/voxel_map_builder.cpp
 )
-add_colorizer_executable(unified_cloud_colorizer src/unified_cloud_colorizer_node.cpp)
 
 install(TARGETS
-  raw_cloud_colorizer
-  registered_cloud_colorizer
-  unified_cloud_colorizer
+  raw_cloud_colorizer_color
+  raw_cloud_map_aggregator
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY
   config
   launch
+  rviz
   DESTINATION share/${PROJECT_NAME}
 )
 

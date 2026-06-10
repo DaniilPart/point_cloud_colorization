@@ -26,14 +26,22 @@ sudo ldconfig
 Run these commands sequentially to generate the geometry, translate it, and build the web viewer.
 
 ```bash
-# 1. Generate the geometric surfels using your ROS 2 node
+# 1. Save a fresh map snapshot from the running aggregator.
+# If periodic saving is disabled (map_save_interval_sec: 0.0), use the service utility.
+ros2 run pointcloud_colorizer save_map /tmp/colored_cloud_map.ply
+
+# Optional naming examples:
+# ros2 run pointcloud_colorizer save_map run1
+# ros2 run pointcloud_colorizer save_map /tmp/maps/
+
+# 2. Generate the geometric surfels using your ROS 2 node
 ros2 run pointcloud_colorizer surfel_generator /tmp/colored_cloud_map.ply /tmp/output_surfels.ply
 
-# 2. Translate the PLY into the LAS format required by Potree 2.x
+# 3. Translate the PLY into the LAS format required by Potree 2.x
 # (Note: This step preserves RGB but strips the custom PCA stretch vectors)
 pdal translate /tmp/output_surfels.ply /tmp/output_surfels.las
 
-# 3. Clean any old workspace and generate the Potree web viewer
+# 4. Clean any old workspace and generate the Potree web viewer
 rm -rf /tmp/potree_workspace
 ~/potree_converter/PotreeConverter_linux_x64/PotreeConverter /tmp/output_surfels.las -o /tmp/potree_workspace --generate-page index
 

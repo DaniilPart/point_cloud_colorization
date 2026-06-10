@@ -18,6 +18,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(std_srvs REQUIRED)
 
 find_package(PCL REQUIRED)
 
@@ -39,6 +40,7 @@ function(add_colorizer_component target_name)
     sensor_msgs
     std_msgs
     nav_msgs
+    std_srvs
     pcl_conversions
     cv_bridge
     tf2_ros
@@ -74,6 +76,7 @@ function(add_colorizer_standalone target_name)
     sensor_msgs
     std_msgs
     nav_msgs
+    std_srvs
     pcl_conversions
     cv_bridge
     tf2_ros
@@ -145,6 +148,11 @@ install(TARGETS
 install(TARGETS
   mesh_color_reconstructor
   surfel_generator
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/save_map
   DESTINATION lib/${PROJECT_NAME}
 )
 

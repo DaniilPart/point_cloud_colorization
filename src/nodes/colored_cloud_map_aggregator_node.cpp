@@ -16,6 +16,7 @@
 #include "rclcpp_components/register_node_macro.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/io/ply_io.h>
@@ -50,6 +51,7 @@ public:
     map_save_ply_path_ = this->declare_parameter<std::string>("map_save_ply_path", "");
     map_save_append_start_timestamp_ = this->declare_parameter<bool>(
       "map_save_append_start_timestamp", true);
+    map_save_service_name_ = this->declare_parameter<std::string>("map_save_service_name", "~/save_map");
     sync_queue_size_ = std::max<int>(1, this->declare_parameter<int>("sync_queue_size", 10));
 
     color_burnin_samples_ = this->declare_parameter<int>("color_burnin_samples", 5);
@@ -94,9 +96,19 @@ public:
       std::bind(&ColoredCloudMapAggregatorNode::map_publish_timer_callback, this));
 
     const auto map_save_period = std::chrono::duration<double>(std::max(0.2, map_save_interval_sec_));
-    map_save_timer_ = this->create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(map_save_period),
-      std::bind(&ColoredCloudMapAggregatorNode::map_save_timer_callback, this));
+    if (map_save_interval_sec_ > 0.0) {
+      map_save_timer_ = this->create_wall_timer(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(map_save_period),
+        std::bind(&ColoredCloudMapAggregatorNode::map_save_timer_callback, this));
+    }
+
+    map_save_service_ = this->create_service<std_srvs::srv::Trigger>(
+      map_save_service_name_,
+      std::bind(
+        &ColoredCloudMapAggregatorNode::map_save_service_callback,
+        this,
+        std::placeholders::_1,
+        std::placeholders::_2));
 
     RCLCPP_INFO(
       this->get_logger(),
@@ -108,8 +120,16 @@ public:
       map_voxel_size_,
       map_publish_interval_sec_,
       map_save_interval_sec_,
-        resolved_map_save_ply_path_.c_str(),
+      resolved_map_save_ply_path_.c_str(),
       sync_queue_size_);
+
+    if (map_save_interval_sec_ <= 0.0) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Periodic map saving disabled (map_save_interval_sec=%.3f). Use service '%s' to save on demand.",
+        map_save_interval_sec_,
+        map_save_service_name_.c_str());
+    }
   }
 
 private:
@@ -123,8 +143,8 @@ private:
       throw std::runtime_error("map_voxel_size must be > 0");
     }
 
-    if (map_save_interval_sec_ <= 0.0) {
-      throw std::runtime_error("map_save_interval_sec must be > 0");
+    if (map_save_interval_sec_ < 0.0) {
+      throw std::runtime_error("map_save_interval_sec must be >= 0");
     }
 
     pointcloud_colorizer::require_non_empty(map_save_ply_path_, "map_save_ply_path");
@@ -177,6 +197,20 @@ private:
 
   void map_save_timer_callback()
   {
+    save_latest_map_snapshot(true);
+  }
+
+  void map_save_service_callback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+  {
+    std::string status_message;
+    response->success = save_latest_map_snapshot(false, &status_message);
+    response->message = status_message;
+  }
+
+  bool save_latest_map_snapshot(bool throttle_logs, std::string * status_message = nullptr)
+  {
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr map_cloud;
     {
       std::lock_guard<std::mutex> lock(latest_map_mutex_);
@@ -184,7 +218,10 @@ private:
     }
 
     if (map_cloud == nullptr || map_cloud->empty()) {
-      return;
+      if (status_message != nullptr) {
+        *status_message = "No map snapshot available yet (map has not been published).";
+      }
+      return false;
     }
 
     const std::filesystem::path ply_path(resolved_map_save_ply_path_);
@@ -193,27 +230,54 @@ private:
       std::error_code ec;
       std::filesystem::create_directories(parent, ec);
       if (ec) {
-        RCLCPP_WARN_THROTTLE(
-          this->get_logger(),
-          *this->get_clock(),
-          3000,
-          "Failed to create directory for map_save_ply_path '%s': %s",
-          parent.string().c_str(),
-          ec.message().c_str());
-        return;
+        const std::string message =
+          "Failed to create directory for map_save_ply_path '" + parent.string() + "': " + ec.message();
+        if (throttle_logs) {
+          RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            3000,
+            "%s",
+            message.c_str());
+        } else {
+          RCLCPP_WARN(this->get_logger(), "%s", message.c_str());
+        }
+        if (status_message != nullptr) {
+          *status_message = message;
+        }
+        return false;
       }
     }
 
     const int rc = pcl::io::savePLYFileBinary(resolved_map_save_ply_path_, *map_cloud);
     if (rc != 0) {
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(),
-        *this->get_clock(),
-        3000,
-        "Failed to save PLY map to '%s' (rc=%d)",
-        resolved_map_save_ply_path_.c_str(),
-        rc);
+      const std::string message =
+        "Failed to save PLY map to '" + resolved_map_save_ply_path_ + "' (rc=" + std::to_string(rc) + ")";
+      if (throttle_logs) {
+        RCLCPP_WARN_THROTTLE(
+          this->get_logger(),
+          *this->get_clock(),
+          3000,
+          "%s",
+          message.c_str());
+      } else {
+        RCLCPP_WARN(this->get_logger(), "%s", message.c_str());
+      }
+      if (status_message != nullptr) {
+        *status_message = message;
+      }
+      return false;
     }
+
+    const std::string success_message =
+      "Saved map snapshot to '" + resolved_map_save_ply_path_ + "' with " +
+      std::to_string(map_cloud->size()) + " points.";
+    if (status_message != nullptr) {
+      *status_message = success_message;
+    }
+
+    RCLCPP_INFO(this->get_logger(), "%s", success_message.c_str());
+    return true;
   }
 
   static std::string make_start_timestamp()
@@ -261,6 +325,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_publisher_;
   rclcpp::TimerBase::SharedPtr map_publish_timer_;
   rclcpp::TimerBase::SharedPtr map_save_timer_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_service_;
 
   std::unique_ptr<pointcloud_colorizer::ColoredCloudMapAggregatorCore> aggregator_core_;
 
@@ -274,6 +339,7 @@ private:
   double map_save_interval_sec_ = 5.0;
   std::string map_save_ply_path_;
   bool map_save_append_start_timestamp_ = true;
+  std::string map_save_service_name_;
   std::string experiment_start_timestamp_;
   std::string resolved_map_save_ply_path_;
   int sync_queue_size_ = 10;

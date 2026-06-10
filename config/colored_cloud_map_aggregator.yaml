@@ -6,9 +6,10 @@ colored_cloud_map_aggregator:
     map_frame_id: ""
     map_voxel_size: 0.3
     map_publish_interval_sec: 1.0
-      map_save_interval_sec: 5.0
-      map_save_append_start_timestamp: true
-    map_save_ply_path: /tmp/colored_cloud_map.ply
+    map_save_interval_sec: 5.0
+    map_save_append_start_timestamp: true
+    map_save_service_name: ~/save_map
+    map_save_ply_path: /home/seva/colored_cloud_map.ply
     sync_queue_size: 10
     color_burnin_samples: 5
     color_step_max: 16

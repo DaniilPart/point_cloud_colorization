@@ -26,3 +26,9 @@ ros2 topic hz /colorizer/raw/naive_map
 ros2 node list
 ros2 node info /raw_cloud_colorizer
 ros2 node info /colored_cloud_map_aggregator
+
+# 8) Trigger on-demand map save (service)
+ros2 run pointcloud_colorizer save_map
+
+# 9) Trigger save using custom service path / timeout
+ros2 run pointcloud_colorizer save_map --service /colored_cloud_map_aggregator/save_map --timeout 10

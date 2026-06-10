@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+
+import argparse
+from datetime import datetime
+from pathlib import Path
+import sys
+
+import rclpy
+from rclpy.node import Node
+from rclpy.parameter import Parameter
+from std_srvs.srv import Trigger
+
+
+class SaveMapClient(Node):
+    def __init__(self, service_name: str) -> None:
+        super().__init__("save_map_client")
+        self._client = self.create_client(Trigger, service_name)
+
+    def request_save(self, timeout_sec: float) -> int:
+        if not self._client.wait_for_service(timeout_sec=timeout_sec):
+            self.get_logger().error("Service not available within timeout.")
+            return 2
+
+        request = Trigger.Request()
+        future = self._client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+
+        if not future.done():
+            self.get_logger().error("Timed out waiting for service response.")
+            return 3
+
+        response = future.result()
+        if response is None:
+            self.get_logger().error("Service call failed without response.")
+            return 4
+
+        if response.success:
+            print(response.message)
+            return 0
+
+        self.get_logger().error(response.message)
+        return 1
+
+    def read_save_parameters(self, node_name: str, timeout_sec: float) -> tuple[str | None, bool | None]:
+        from rcl_interfaces.srv import GetParameters
+
+        client = self.create_client(GetParameters, f"{node_name}/get_parameters")
+        try:
+            if not client.wait_for_service(timeout_sec=timeout_sec):
+                return None, None
+
+            req = GetParameters.Request()
+            req.names = ["map_save_ply_path", "map_save_append_start_timestamp"]
+            future = client.call_async(req)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+            if not future.done() or future.result() is None:
+                return None, None
+
+            values = future.result().values
+            if len(values) != 2:
+                return None, None
+
+            path_value = values[0].string_value
+            append_value = values[1].bool_value
+            return path_value, append_value
+        finally:
+            self.destroy_client(client)
+
+    def write_save_parameters(self, node_name: str, path_value: str, append_value: bool, timeout_sec: float) -> bool:
+        from rcl_interfaces.srv import SetParameters
+
+        client = self.create_client(SetParameters, f"{node_name}/set_parameters")
+        try:
+            if not client.wait_for_service(timeout_sec=timeout_sec):
+                return False
+
+            req = SetParameters.Request()
+            req.parameters = [
+                Parameter("map_save_ply_path", Parameter.Type.STRING, path_value).to_parameter_msg(),
+                Parameter("map_save_append_start_timestamp", Parameter.Type.BOOL, append_value).to_parameter_msg(),
+            ]
+
+            future = client.call_async(req)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+            if not future.done() or future.result() is None:
+                return False
+
+            return all(result.successful for result in future.result().results)
+        finally:
+            self.destroy_client(client)
+
+
+def discover_save_map_service(node: Node) -> str:
+    services = node.get_service_names_and_types()
+    candidates = []
+    for name, types in services:
+        if "std_srvs/srv/Trigger" not in types:
+            continue
+        if name == "save_map" or name.endswith("/save_map"):
+            candidates.append(name)
+
+    scoped_candidates = [name for name in candidates if infer_node_name_from_service_name(name)]
+    if len(scoped_candidates) == 1:
+        return scoped_candidates[0]
+    if len(scoped_candidates) > 1:
+        names = ", ".join(sorted(scoped_candidates))
+        raise RuntimeError(
+            "Multiple node-scoped save_map services found. Use --service to choose one: " + names
+        )
+
+    # Fallback for legacy/global service naming.
+    if "/save_map" in candidates:
+        return "/save_map"
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if len(candidates) > 1:
+        names = ", ".join(sorted(candidates))
+        raise RuntimeError(
+            "Multiple save_map services found. Use --service to choose one: " + names
+        )
+
+    raise RuntimeError("No Trigger service ending with 'save_map' found.")
+
+
+def infer_node_name_from_service_name(service_name: str) -> str:
+    suffix = "/save_map"
+    if service_name.endswith(suffix):
+        node_name = service_name[: -len(suffix)]
+        if node_name:
+            return node_name
+    return ""
+
+
+def make_named_output_path(current_path: str, map_name: str) -> str:
+    raw_target = map_name.strip()
+    if not raw_target:
+        raise RuntimeError("Map name/path must not be empty.")
+
+    configured_path = Path(current_path) if current_path else Path.cwd() / "colored_cloud_map.ply"
+    base_dir = configured_path.parent if configured_path.parent else Path.cwd()
+    base_stem = configured_path.stem if configured_path.stem else "map"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    is_folder_target = raw_target.endswith("/") or raw_target.endswith("\\")
+    normalized = raw_target.rstrip("/\\") if is_folder_target else raw_target
+    target = Path(normalized)
+
+    # If a folder is explicitly provided, keep default stem and append timestamp.
+    if is_folder_target:
+        folder = target if target.is_absolute() else (base_dir / target)
+        return str(folder / f"{base_stem}_{timestamp}.ply")
+
+    # If extension is provided, use exactly that filename and do not append timestamp.
+    if target.suffix:
+        path_with_ext = target if target.is_absolute() else (base_dir / target)
+        return str(path_with_ext)
+
+    # Otherwise treat as base name/path and append timestamp.
+    if target.is_absolute():
+        parent = target.parent if str(target.parent) else base_dir
+        stem = target.name
+        if not stem:
+            stem = base_stem
+        return str(parent / f"{stem}_{timestamp}.ply")
+
+    if target.parent == Path("."):
+        return str(base_dir / f"{target.name}_{timestamp}.ply")
+
+    return str(base_dir / target.parent / f"{target.name}_{timestamp}.ply")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Trigger map save on the aggregator node.")
+    parser.add_argument(
+        "name",
+        nargs="?",
+        default="",
+        help=(
+            "Optional map name/path. Examples: 'run1' -> run1_YYYYMMDD_HHMMSS.ply, "
+            "'/tmp/run1.ply' -> exact file, '/tmp/maps/' or '/tmp/maps\\\\' -> folder output."
+        ),
+    )
+    parser.add_argument(
+        "--service",
+        default="",
+        help="Fully-qualified Trigger service name. If omitted, auto-discovery is used.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="Timeout in seconds for service availability and response.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    if args.timeout <= 0.0:
+        print("--timeout must be > 0", file=sys.stderr)
+        return 2
+
+    rclpy.init()
+    resolver = Node("save_map_service_resolver")
+    try:
+        service_name = args.service.strip() if args.service else ""
+        if not service_name:
+            service_name = discover_save_map_service(resolver)
+            print(f"Using service: {service_name}")
+    except RuntimeError as exc:
+        resolver.get_logger().error(str(exc))
+        resolver.destroy_node()
+        rclpy.shutdown()
+        return 2
+
+    resolver.destroy_node()
+
+    node = SaveMapClient(service_name)
+    original_path = None
+    original_append = None
+    node_name = ""
+
+    try:
+        if args.name:
+            node_name = infer_node_name_from_service_name(service_name)
+            if not node_name:
+                node.get_logger().error(
+                    "Cannot infer target node name from service path. "
+                    "Use --service /<namespace>/colored_cloud_map_aggregator/save_map"
+                )
+                return 2
+
+            original_path, original_append = node.read_save_parameters(node_name, args.timeout)
+            if original_path is None or original_append is None:
+                node.get_logger().error(f"Failed to read save parameters from node '{node_name}'.")
+                return 2
+
+            named_path = make_named_output_path(original_path, args.name)
+            if not node.write_save_parameters(node_name, named_path, False, args.timeout):
+                node.get_logger().error(f"Failed to set save parameters on node '{node_name}'.")
+                return 2
+
+            print(f"Named save path: {named_path}")
+
+        return node.request_save(args.timeout)
+    finally:
+        if node_name and original_path is not None and original_append is not None:
+            node.write_save_parameters(node_name, original_path, original_append, args.timeout)
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

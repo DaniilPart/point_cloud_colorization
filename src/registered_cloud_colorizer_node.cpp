@@ -1,5 +1,9 @@
+#include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <cstdint>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -7,6 +11,9 @@
 #include "pointcloud_colorizer/transform_utils.hpp"
 
 #include "rclcpp/rclcpp.hpp"
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
+#include "diagnostic_msgs/msg/key_value.hpp"
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
@@ -74,6 +81,20 @@ public:
         "camera_to_lidar_matrix", std::vector<double>{});
     transform_lookup_timeout_ = rclcpp::Duration::from_seconds(
         this->declare_parameter<double>("transform_lookup_timeout_sec", 0.1));
+    sync_queue_size_ = std::max<int>(1, this->declare_parameter<int>("sync_queue_size", 10));
+    publish_diagnostics_ = this->declare_parameter<bool>("publish_diagnostics", true);
+    diagnostics_topic_ = this->declare_parameter<std::string>(
+      "diagnostics_topic", "/diagnostics");
+    health_report_interval_sec_ = this->declare_parameter<double>(
+      "health_report_interval_sec", 5.0);
+    input_stale_timeout_sec_ = this->declare_parameter<double>(
+      "input_stale_timeout_sec", 2.0);
+    warning_throttle_sec_ = this->declare_parameter<double>(
+      "warning_throttle_sec", 5.0);
+    startup_grace_period_sec_ = this->declare_parameter<double>(
+      "startup_grace_period_sec", 8.0);
+
+    startup_time_ = this->now();
 
     transform_source_ = pointcloud_colorizer::parse_transform_source(transform_source_string_);
     validate_configuration();
@@ -81,12 +102,25 @@ public:
 
     const auto sensor_qos = rmw_qos_profile_sensor_data;
 
+    odometry_state_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+      input_odometry_topic_,
+      rclcpp::SensorDataQoS(),
+      std::bind(&RegisteredCloudColorizerNode::odometry_input_callback, this, std::placeholders::_1));
+    image_state_sub_ = this->create_subscription<sensor_msgs::msg::CompressedImage>(
+      input_image_topic_,
+      rclcpp::SensorDataQoS(),
+      std::bind(&RegisteredCloudColorizerNode::image_input_callback, this, std::placeholders::_1));
+    cloud_state_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+      input_registered_cloud_topic_,
+      rclcpp::SensorDataQoS(),
+      std::bind(&RegisteredCloudColorizerNode::cloud_input_callback, this, std::placeholders::_1));
+
     odometry_.subscribe(this, input_odometry_topic_, sensor_qos);
     image_.subscribe(this, input_image_topic_, sensor_qos);
     registered_cloud_.subscribe(this, input_registered_cloud_topic_, sensor_qos);
 
     sync_ = std::make_shared<RegisteredSync>(
-        RegisteredSyncPolicy(10),
+      RegisteredSyncPolicy(sync_queue_size_),
         odometry_,
         image_,
         registered_cloud_);
@@ -97,6 +131,18 @@ public:
         output_cloud_topic_, 10);
     map_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
         output_map_topic_, 10);
+
+    if (publish_diagnostics_) {
+      diagnostics_publisher_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+        diagnostics_topic_,
+        10);
+    }
+
+    const auto health_period = std::chrono::duration<double>(
+      std::max(0.2, health_report_interval_sec_));
+    health_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(health_period),
+      std::bind(&RegisteredCloudColorizerNode::health_timer_callback, this));
 
     camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
         camera_info_topic_,
@@ -120,6 +166,16 @@ public:
         map_voxel_size_,
         publish_only_colored_points_ ? "true" : "false",
         transform_source_string_.c_str());
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Registered colorizer health: sync_queue_size=%d health_report_interval_sec=%.2f input_stale_timeout_sec=%.2f startup_grace_period_sec=%.2f warning_throttle_sec=%.2f diagnostics=%s diagnostics_topic=%s",
+        sync_queue_size_,
+        health_report_interval_sec_,
+        input_stale_timeout_sec_,
+        startup_grace_period_sec_,
+        warning_throttle_sec_,
+        publish_diagnostics_ ? "enabled" : "disabled",
+        diagnostics_topic_.c_str());
   }
 
 private:
@@ -165,6 +221,10 @@ private:
 
   void camera_info_callback(const sensor_msgs::msg::CameraInfo::SharedPtr msg)
   {
+    ++camera_info_received_count_;
+    camera_info_seen_ = true;
+    last_camera_info_receive_time_ = this->now();
+
     if (camera_info_received_) {
       return;
     }
@@ -177,6 +237,30 @@ private:
 
     camera_info_received_ = true;
     RCLCPP_INFO(this->get_logger(), "Camera calibration parameters successfully received.");
+  }
+
+  void odometry_input_callback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
+  {
+    odometry_seen_ = true;
+    ++odometry_received_count_;
+    last_odometry_receive_time_ = this->now();
+    last_odometry_stamp_ = rclcpp::Time(msg->header.stamp);
+  }
+
+  void image_input_callback(const sensor_msgs::msg::CompressedImage::ConstSharedPtr msg)
+  {
+    image_seen_ = true;
+    ++image_received_count_;
+    last_image_receive_time_ = this->now();
+    last_image_stamp_ = rclcpp::Time(msg->header.stamp);
+  }
+
+  void cloud_input_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
+  {
+    cloud_seen_ = true;
+    ++cloud_received_count_;
+    last_cloud_receive_time_ = this->now();
+    last_cloud_stamp_ = rclcpp::Time(msg->header.stamp);
   }
 
   bool get_camera_to_lidar_transform(
@@ -210,7 +294,16 @@ private:
     const sensor_msgs::msg::CompressedImage::ConstSharedPtr img_msg,
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg)
   {
+    ++sync_callback_count_;
+    last_sync_callback_time_ = this->now();
+
     if (!camera_info_received_) {
+      ++skipped_missing_camera_info_count_;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        static_cast<int64_t>(warning_throttle_sec_ * 1000.0),
+        "Skipping synchronized callback: camera_info has not been received yet.");
       return;
     }
 
@@ -226,6 +319,7 @@ private:
     try {
       cv_image = cv_bridge::toCvCopy(img_msg, "bgr8")->image;
     } catch (cv_bridge::Exception & e) {
+      ++image_decode_failure_count_;
       RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
       return;
     }
@@ -244,6 +338,7 @@ private:
 
     Eigen::Matrix4f t_camera_to_lidar = Eigen::Matrix4f::Identity();
     if (!get_camera_to_lidar_transform(rclcpp::Time(cloud_msg->header.stamp), t_camera_to_lidar)) {
+      ++transform_lookup_failure_count_;
       return;
     }
 
@@ -316,6 +411,15 @@ private:
     cloud_out->height = 1;
     cloud_out->is_dense = true;
 
+    if (cloud_out->points.empty()) {
+      ++zero_output_cloud_count_;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        static_cast<int64_t>(warning_throttle_sec_ * 1000.0),
+        "Synchronized callback produced an empty colored cloud.");
+    }
+
     sensor_msgs::msg::PointCloud2 msg_out;
     pcl::toROSMsg(*cloud_out, msg_out);
     msg_out.header = cloud_msg->header;
@@ -323,6 +427,8 @@ private:
       msg_out.header.frame_id = output_frame_id_;
     }
     publisher_->publish(msg_out);
+    ++output_publish_count_;
+    last_output_publish_time_ = this->now();
 
     *accumulated_map_ += *cloud_out;
 
@@ -344,15 +450,195 @@ private:
       map_msg.header.frame_id = map_frame_id_;
     }
     map_publisher_->publish(map_msg);
+    ++map_publish_count_;
+  }
+
+  bool is_stale(bool seen, const rclcpp::Time & last_time, const rclcpp::Time & now) const
+  {
+    if (!seen) {
+      return true;
+    }
+    return (now - last_time).seconds() > input_stale_timeout_sec_;
+  }
+
+  double age_seconds(bool seen, const rclcpp::Time & last_time, const rclcpp::Time & now) const
+  {
+    if (!seen) {
+      return -1.0;
+    }
+    return (now - last_time).seconds();
+  }
+
+  void publish_diagnostics(
+    const rclcpp::Time & now,
+    std::uint8_t level,
+    const std::string & summary,
+    const std::string & detail)
+  {
+    if (!publish_diagnostics_ || !diagnostics_publisher_) {
+      return;
+    }
+
+    diagnostic_msgs::msg::DiagnosticArray diagnostics;
+    diagnostics.header.stamp = now;
+
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = "pointcloud_colorizer/registered_cloud_colorizer";
+    status.hardware_id = "pointcloud_colorizer";
+    status.level = level;
+    status.message = summary;
+
+    const auto add_value = [&status](const std::string & key, const std::string & value) {
+      diagnostic_msgs::msg::KeyValue pair;
+      pair.key = key;
+      pair.value = value;
+      status.values.push_back(pair);
+    };
+
+    add_value("detail", detail);
+    add_value("odometry_seen", odometry_seen_ ? "true" : "false");
+    add_value("image_seen", image_seen_ ? "true" : "false");
+    add_value("cloud_seen", cloud_seen_ ? "true" : "false");
+    add_value("camera_info_received", camera_info_received_ ? "true" : "false");
+    add_value("odometry_age_sec", std::to_string(age_seconds(odometry_seen_, last_odometry_receive_time_, now)));
+    add_value("image_age_sec", std::to_string(age_seconds(image_seen_, last_image_receive_time_, now)));
+    add_value("cloud_age_sec", std::to_string(age_seconds(cloud_seen_, last_cloud_receive_time_, now)));
+    add_value("camera_info_age_sec", std::to_string(age_seconds(camera_info_seen_, last_camera_info_receive_time_, now)));
+    add_value("sync_age_sec", std::to_string(age_seconds(sync_callback_count_ > 0, last_sync_callback_time_, now)));
+    add_value("output_age_sec", std::to_string(age_seconds(output_publish_count_ > 0, last_output_publish_time_, now)));
+    add_value("odometry_received_count", std::to_string(odometry_received_count_));
+    add_value("image_received_count", std::to_string(image_received_count_));
+    add_value("cloud_received_count", std::to_string(cloud_received_count_));
+    add_value("camera_info_received_count", std::to_string(camera_info_received_count_));
+    add_value("sync_callback_count", std::to_string(sync_callback_count_));
+    add_value("output_publish_count", std::to_string(output_publish_count_));
+    add_value("map_publish_count", std::to_string(map_publish_count_));
+    add_value("image_decode_failure_count", std::to_string(image_decode_failure_count_));
+    add_value("transform_lookup_failure_count", std::to_string(transform_lookup_failure_count_));
+    add_value("skipped_missing_camera_info_count", std::to_string(skipped_missing_camera_info_count_));
+    add_value("zero_output_cloud_count", std::to_string(zero_output_cloud_count_));
+    add_value("sync_queue_size", std::to_string(sync_queue_size_));
+    add_value("input_stale_timeout_sec", std::to_string(input_stale_timeout_sec_));
+
+    diagnostics.status.push_back(status);
+    diagnostics_publisher_->publish(diagnostics);
+  }
+
+  void health_timer_callback()
+  {
+    const auto now = this->now();
+    const bool in_startup_grace = (now - startup_time_).seconds() < startup_grace_period_sec_;
+
+    std::uint8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    std::string summary = "registered_cloud_colorizer healthy";
+    std::ostringstream detail;
+
+    std::vector<std::string> missing_inputs;
+    if (!odometry_seen_) {
+      missing_inputs.push_back("odometry");
+    }
+    if (!image_seen_) {
+      missing_inputs.push_back("image");
+    }
+    if (!cloud_seen_) {
+      missing_inputs.push_back("registered_cloud");
+    }
+
+    if (!missing_inputs.empty()) {
+      level = in_startup_grace ?
+        diagnostic_msgs::msg::DiagnosticStatus::WARN :
+        diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      summary = "Waiting for input stream(s): ";
+      for (std::size_t i = 0; i < missing_inputs.size(); ++i) {
+        summary += missing_inputs[i];
+        if (i + 1 < missing_inputs.size()) {
+          summary += ", ";
+        }
+      }
+    } else if (!camera_info_received_) {
+      level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      summary = "Inputs received but camera_info has not been received";
+    } else {
+      const bool odom_stale = is_stale(odometry_seen_, last_odometry_receive_time_, now);
+      const bool image_stale = is_stale(image_seen_, last_image_receive_time_, now);
+      const bool cloud_stale = is_stale(cloud_seen_, last_cloud_receive_time_, now);
+
+      if (odom_stale || image_stale || cloud_stale) {
+        level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+        summary = "Input stream stale: ";
+        if (odom_stale) {
+          summary += "odometry ";
+        }
+        if (image_stale) {
+          summary += "image ";
+        }
+        if (cloud_stale) {
+          summary += "registered_cloud ";
+        }
+      } else {
+        const double sync_age = age_seconds(sync_callback_count_ > 0, last_sync_callback_time_, now);
+        const double output_age = age_seconds(output_publish_count_ > 0, last_output_publish_time_, now);
+
+        if (sync_callback_count_ == 0 || sync_age > input_stale_timeout_sec_) {
+          level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+          summary = "Inputs are active but synchronization is not producing callbacks";
+        } else if (output_publish_count_ == 0 || output_age > input_stale_timeout_sec_) {
+          level = (image_decode_failure_count_ > 0 || transform_lookup_failure_count_ > 0) ?
+            diagnostic_msgs::msg::DiagnosticStatus::ERROR :
+            diagnostic_msgs::msg::DiagnosticStatus::WARN;
+          summary = "Synchronized callbacks exist but colored cloud output is missing";
+        }
+      }
+    }
+
+    detail
+      << "odom_age_sec=" << age_seconds(odometry_seen_, last_odometry_receive_time_, now)
+      << " image_age_sec=" << age_seconds(image_seen_, last_image_receive_time_, now)
+      << " cloud_age_sec=" << age_seconds(cloud_seen_, last_cloud_receive_time_, now)
+      << " camera_info_age_sec=" << age_seconds(camera_info_seen_, last_camera_info_receive_time_, now)
+      << " sync_age_sec=" << age_seconds(sync_callback_count_ > 0, last_sync_callback_time_, now)
+      << " output_age_sec=" << age_seconds(output_publish_count_ > 0, last_output_publish_time_, now)
+      << " sync_count=" << sync_callback_count_
+      << " output_count=" << output_publish_count_
+      << " decode_failures=" << image_decode_failure_count_
+      << " transform_failures=" << transform_lookup_failure_count_
+      << " skipped_missing_camera_info=" << skipped_missing_camera_info_count_;
+
+    const bool reason_changed = summary != last_health_summary_ || level != last_health_level_;
+    const bool throttle_elapsed =
+      (now - last_health_log_time_).seconds() >= warning_throttle_sec_;
+
+    if (level == diagnostic_msgs::msg::DiagnosticStatus::OK) {
+      if (last_health_level_ != diagnostic_msgs::msg::DiagnosticStatus::OK) {
+        RCLCPP_INFO(this->get_logger(), "Health recovered: %s | %s", summary.c_str(), detail.str().c_str());
+      }
+    } else if (reason_changed || throttle_elapsed) {
+      if (level == diagnostic_msgs::msg::DiagnosticStatus::ERROR) {
+        RCLCPP_ERROR(this->get_logger(), "Health state: %s | %s", summary.c_str(), detail.str().c_str());
+      } else {
+        RCLCPP_WARN(this->get_logger(), "Health state: %s | %s", summary.c_str(), detail.str().c_str());
+      }
+      last_health_log_time_ = now;
+    }
+
+    last_health_summary_ = summary;
+    last_health_level_ = level;
+
+    publish_diagnostics(now, level, summary, detail.str());
   }
 
   message_filters::Subscriber<nav_msgs::msg::Odometry> odometry_;
   message_filters::Subscriber<sensor_msgs::msg::CompressedImage> image_;
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> registered_cloud_;
   std::shared_ptr<RegisteredSync> sync_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odometry_state_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_state_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_state_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_publisher_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
+  rclcpp::TimerBase::SharedPtr health_timer_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
@@ -375,8 +661,43 @@ private:
   TransformSource transform_source_ = TransformSource::Config;
   rclcpp::Duration transform_lookup_timeout_ = rclcpp::Duration::from_seconds(0.1);
   float map_voxel_size_ = 0.3f;
+  int sync_queue_size_ = 10;
   bool publish_only_colored_points_ = true;
+  bool publish_diagnostics_ = true;
   bool camera_info_received_ = false;
+  bool camera_info_seen_ = false;
+  bool odometry_seen_ = false;
+  bool image_seen_ = false;
+  bool cloud_seen_ = false;
+  double health_report_interval_sec_ = 5.0;
+  double input_stale_timeout_sec_ = 2.0;
+  double warning_throttle_sec_ = 5.0;
+  double startup_grace_period_sec_ = 8.0;
+  std::string diagnostics_topic_ = "/diagnostics";
+  std::uint8_t last_health_level_ = diagnostic_msgs::msg::DiagnosticStatus::OK;
+  std::string last_health_summary_;
+  rclcpp::Time startup_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_health_log_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_odometry_receive_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_image_receive_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_cloud_receive_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_camera_info_receive_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_sync_callback_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_output_publish_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_odometry_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_image_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_cloud_stamp_{0, 0, RCL_ROS_TIME};
+  std::uint64_t odometry_received_count_ = 0;
+  std::uint64_t image_received_count_ = 0;
+  std::uint64_t cloud_received_count_ = 0;
+  std::uint64_t camera_info_received_count_ = 0;
+  std::uint64_t sync_callback_count_ = 0;
+  std::uint64_t output_publish_count_ = 0;
+  std::uint64_t map_publish_count_ = 0;
+  std::uint64_t image_decode_failure_count_ = 0;
+  std::uint64_t transform_lookup_failure_count_ = 0;
+  std::uint64_t skipped_missing_camera_info_count_ = 0;
+  std::uint64_t zero_output_cloud_count_ = 0;
   Eigen::Matrix4f camera_to_lidar_transform_ = Eigen::Matrix4f::Identity();
 };
 

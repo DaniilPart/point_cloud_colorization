@@ -1,0 +1,29 @@
+registered_cloud_colorizer:
+  ros__parameters:
+    input_registered_cloud_topic: /liorf/mapping/cloud_registered
+    input_odometry_topic: /liorf/mapping/odometry
+    input_image_topic: /basler_front/image_color/compressed
+    camera_info_topic: /basler_front/camera_info
+    output_cloud_topic: /colorizer/registered/colored_cloud
+    output_map_topic: /colorizer/registered/naive_map
+    output_frame_id: ""
+    map_frame_id: ""
+    map_voxel_size: 0.3
+    publish_only_colored_points: true
+    transform_source: config
+    camera_frame_id: pylon_camera
+    lidar_frame_id: os1/os_lidar
+    transform_lookup_timeout_sec: 0.1
+    sync_queue_size: 10
+    publish_diagnostics: true
+    diagnostics_topic: /diagnostics
+    health_report_interval_sec: 5.0
+    input_stale_timeout_sec: 2.0
+    warning_throttle_sec: 5.0
+    startup_grace_period_sec: 8.0
+    camera_to_lidar_matrix: [
+      0.019, 0.0, -1.0, -0.058,
+      -1.0, 0.0, -0.019, -0.001,
+      0.0, 1.0, 0.0, -0.145,
+      0.0, 0.0, 0.0, 1.0
+    ]

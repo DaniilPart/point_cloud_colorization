@@ -17,6 +17,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 
 find_package(PCL REQUIRED)
 
@@ -43,6 +44,7 @@ function(add_colorizer_executable target_name source_file)
     tf2
     geometry_msgs
     message_filters
+    diagnostic_msgs
   )
 
   target_link_libraries(${target_name}

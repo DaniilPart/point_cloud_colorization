@@ -21,13 +21,22 @@ ros2 pkg executables pointcloud_colorizer
 
 # 4) Run the raw node
 source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/raw_cloud_colorizer.yaml
 ros2 run pointcloud_colorizer raw_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
 
 # 5) Run the registered node
 source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/registered_cloud_colorizer.yaml
 ros2 run pointcloud_colorizer registered_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
+
+# 5b) Launch the main registered pipeline (default entrypoint)
+source ~/ros2_ws/install/setup.bash
+ros2 launch pointcloud_colorizer colorizers.launch.py
+
+# 5c) Launch raw or unified pipelines explicitly
+source ~/ros2_ws/install/setup.bash
+ros2 launch pointcloud_colorizer raw_cloud_colorizer.launch.py
+ros2 launch pointcloud_colorizer unified_cloud_colorizer.launch.py mode:=registered
 
 # 6) Check output topics for the raw node
 source ~/ros2_ws/install/setup.bash

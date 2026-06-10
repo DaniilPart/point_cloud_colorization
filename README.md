@@ -109,13 +109,18 @@ pointcloud_colorizer unified_cloud_colorizer
 
 ## Configuration
 
-Default parameters are stored in:
+Parameters are split per node:
 
-- `config/colorizers.yaml`
+- `config/registered_cloud_colorizer.yaml`
+- `config/raw_cloud_colorizer.yaml`
+- `config/unified_cloud_colorizer.yaml`
 
-Launch file:
+Launch files are also split per node:
 
-- `launch/colorizers.launch.py`
+- `launch/colorizers.launch.py` (main default, launches registered pipeline)
+- `launch/registered_cloud_colorizer.launch.py`
+- `launch/raw_cloud_colorizer.launch.py`
+- `launch/unified_cloud_colorizer.launch.py`
 
 Parameter groups:
 
@@ -182,7 +187,7 @@ Parameter groups:
 
 ## Run The Dedicated Nodes
 
-### Start both dedicated nodes from the launch file
+### Start the main registered pipeline (default)
 
 ```bash
 source ~/ros2_ws/install/setup.bash
@@ -193,16 +198,29 @@ You can verify the loaded parameters with:
 
 ```bash
 ros2 node list | grep colorizer
-ros2 param list /raw_colorizer
-ros2 param list /registered_colorizer
-ros2 param get /registered_colorizer map_voxel_size
+ros2 param list /registered_cloud_colorizer
+ros2 param get /registered_cloud_colorizer map_voxel_size
+```
+
+### Launch the registered node explicitly
+
+```bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch pointcloud_colorizer registered_cloud_colorizer.launch.py
+```
+
+### Launch the raw node explicitly
+
+```bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch pointcloud_colorizer raw_cloud_colorizer.launch.py
 ```
 
 ### Run the raw node directly
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/raw_cloud_colorizer.yaml
 ros2 run pointcloud_colorizer raw_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
 ```
 
@@ -210,7 +228,7 @@ ros2 run pointcloud_colorizer raw_cloud_colorizer --ros-args --params-file "$PAR
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/registered_cloud_colorizer.yaml
 ros2 run pointcloud_colorizer registered_cloud_colorizer --ros-args --params-file "$PARAMS_FILE"
 ```
 
@@ -220,7 +238,7 @@ ros2 run pointcloud_colorizer registered_cloud_colorizer --ros-args --params-fil
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/unified_cloud_colorizer.yaml
 ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args --params-file "$PARAMS_FILE" -p mode:=raw
 ```
 
@@ -228,8 +246,16 @@ ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args --params-file "
 
 ```bash
 source ~/ros2_ws/install/setup.bash
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colorizers.yaml
+PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/unified_cloud_colorizer.yaml
 ros2 run pointcloud_colorizer unified_cloud_colorizer --ros-args --params-file "$PARAMS_FILE" -p mode:=registered
+```
+
+### Launch unified with launch arguments
+
+```bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch pointcloud_colorizer unified_cloud_colorizer.launch.py mode:=raw
+ros2 launch pointcloud_colorizer unified_cloud_colorizer.launch.py mode:=registered
 ```
 
 The unified node fails fast if `mode` is not `raw` or `registered`.
@@ -328,7 +354,12 @@ Main source files:
 
 Support files:
 
-- `config/colorizers.yaml`
+- `config/raw_cloud_colorizer.yaml`
+- `config/registered_cloud_colorizer.yaml`
+- `config/unified_cloud_colorizer.yaml`
 - `launch/colorizers.launch.py`
+- `launch/raw_cloud_colorizer.launch.py`
+- `launch/registered_cloud_colorizer.launch.py`
+- `launch/unified_cloud_colorizer.launch.py`
 - `data/demo.gif`
 - `data/prew_fast.gif`

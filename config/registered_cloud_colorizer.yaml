@@ -21,6 +21,10 @@ registered_cloud_colorizer:
     input_stale_timeout_sec: 2.0
     warning_throttle_sec: 5.0
     startup_grace_period_sec: 8.0
+    color_burnin_samples: 5
+    color_step_max: 16
+    color_ignore_placeholder_gray: true
+    placeholder_gray_value: 128
     camera_to_lidar_matrix: [
       0.019, 0.0, -1.0, -0.058,
       -1.0, 0.0, -0.019, -0.001,

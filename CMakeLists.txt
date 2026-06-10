@@ -21,8 +21,8 @@ find_package(diagnostic_msgs REQUIRED)
 
 find_package(PCL REQUIRED)
 
-function(add_colorizer_executable target_name source_file)
-  add_executable(${target_name} ${source_file})
+function(add_colorizer_executable target_name)
+  add_executable(${target_name} ${ARGN})
 
   target_include_directories(${target_name} PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -54,7 +54,11 @@ function(add_colorizer_executable target_name source_file)
 endfunction()
 
 add_colorizer_executable(raw_cloud_colorizer src/raw_cloud_colorizer_node.cpp)
-add_colorizer_executable(registered_cloud_colorizer src/registered_cloud_colorizer_node.cpp)
+add_colorizer_executable(
+  registered_cloud_colorizer
+  src/registered_cloud_colorizer_node.cpp
+  src/voxel_color_estimator.cpp
+)
 add_colorizer_executable(unified_cloud_colorizer src/unified_cloud_colorizer_node.cpp)
 
 install(TARGETS

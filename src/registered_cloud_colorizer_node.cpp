@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "pointcloud_colorizer/transform_utils.hpp"
+#include "pointcloud_colorizer/voxel_color_estimator.hpp"
 
 #include "rclcpp/rclcpp.hpp"
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
@@ -20,7 +21,6 @@
 #include "nav_msgs/msg/odometry.hpp"
 
 #include <pcl_conversions/pcl_conversions.h>
-#include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <cv_bridge/cv_bridge.hpp>
@@ -93,12 +93,26 @@ public:
       "warning_throttle_sec", 5.0);
     startup_grace_period_sec_ = this->declare_parameter<double>(
       "startup_grace_period_sec", 8.0);
+    color_burnin_samples_ = this->declare_parameter<int>("color_burnin_samples", 5);
+    color_step_max_ = this->declare_parameter<int>("color_step_max", 16);
+    color_ignore_placeholder_gray_ = this->declare_parameter<bool>(
+      "color_ignore_placeholder_gray", true);
+    placeholder_gray_value_ = this->declare_parameter<int>("placeholder_gray_value", 128);
 
     startup_time_ = this->now();
 
     transform_source_ = pointcloud_colorizer::parse_transform_source(transform_source_string_);
     validate_configuration();
     initialize_transform();
+
+    pointcloud_colorizer::VoxelColorEstimatorConfig estimator_config;
+    estimator_config.voxel_size = map_voxel_size_;
+    estimator_config.burn_in_samples = color_burnin_samples_;
+    estimator_config.step_max = color_step_max_;
+    estimator_config.ignore_placeholder_gray = color_ignore_placeholder_gray_;
+    estimator_config.placeholder_gray_value = placeholder_gray_value_;
+    voxel_color_estimator_ = std::make_unique<pointcloud_colorizer::VoxelColorEstimator>(
+      estimator_config);
 
     const auto sensor_qos = rmw_qos_profile_sensor_data;
 
@@ -176,6 +190,13 @@ public:
         warning_throttle_sec_,
         publish_diagnostics_ ? "enabled" : "disabled",
         diagnostics_topic_.c_str());
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Registered color filter: burnin_samples=%d step_max=%d ignore_placeholder_gray=%s placeholder_gray_value=%d",
+        color_burnin_samples_,
+        color_step_max_,
+        color_ignore_placeholder_gray_ ? "true" : "false",
+        placeholder_gray_value_);
   }
 
 private:
@@ -430,21 +451,14 @@ private:
     ++output_publish_count_;
     last_output_publish_time_ = this->now();
 
-    *accumulated_map_ += *cloud_out;
+    for (const auto & point : cloud_out->points) {
+      voxel_color_estimator_->update(point);
+    }
 
-    pcl::VoxelGrid<pcl::PointXYZRGB> voxel_filter;
-    voxel_filter.setInputCloud(accumulated_map_);
-    voxel_filter.setLeafSize(map_voxel_size_, map_voxel_size_, map_voxel_size_);
-
-    auto downsampled_map = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
-    voxel_filter.filter(*downsampled_map);
-    downsampled_map->width = downsampled_map->points.size();
-    downsampled_map->height = 1;
-    downsampled_map->is_dense = true;
-    accumulated_map_ = downsampled_map;
+    const auto map_cloud = voxel_color_estimator_->build_cloud();
 
     sensor_msgs::msg::PointCloud2 map_msg;
-    pcl::toROSMsg(*accumulated_map_, map_msg);
+    pcl::toROSMsg(*map_cloud, map_msg);
     map_msg.header = cloud_msg->header;
     if (!map_frame_id_.empty()) {
       map_msg.header.frame_id = map_frame_id_;
@@ -519,6 +533,12 @@ private:
     add_value("zero_output_cloud_count", std::to_string(zero_output_cloud_count_));
     add_value("sync_queue_size", std::to_string(sync_queue_size_));
     add_value("input_stale_timeout_sec", std::to_string(input_stale_timeout_sec_));
+    add_value("voxel_count", std::to_string(voxel_color_estimator_->voxel_count()));
+    add_value("voxel_updates_total", std::to_string(voxel_color_estimator_->stats().voxel_updates_total));
+    add_value("voxel_new_cells", std::to_string(voxel_color_estimator_->stats().voxel_new_cells));
+    add_value("voxel_burnin_updates", std::to_string(voxel_color_estimator_->stats().voxel_burnin_updates));
+    add_value("voxel_filtered_updates", std::to_string(voxel_color_estimator_->stats().voxel_filtered_updates));
+    add_value("voxel_skipped_placeholder", std::to_string(voxel_color_estimator_->stats().voxel_skipped_placeholder));
 
     diagnostics.status.push_back(status);
     diagnostics_publisher_->publish(diagnostics);
@@ -644,8 +664,7 @@ private:
 
   cv::Mat camera_matrix_;
   cv::Mat dist_coeffs_;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr accumulated_map_ =
-    std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
+  std::unique_ptr<pointcloud_colorizer::VoxelColorEstimator> voxel_color_estimator_;
   std::string input_registered_cloud_topic_;
   std::string input_odometry_topic_;
   std::string input_image_topic_;
@@ -673,6 +692,10 @@ private:
   double input_stale_timeout_sec_ = 2.0;
   double warning_throttle_sec_ = 5.0;
   double startup_grace_period_sec_ = 8.0;
+  int color_burnin_samples_ = 5;
+  int color_step_max_ = 16;
+  bool color_ignore_placeholder_gray_ = true;
+  int placeholder_gray_value_ = 128;
   std::string diagnostics_topic_ = "/diagnostics";
   std::uint8_t last_health_level_ = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string last_health_summary_;

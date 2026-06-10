@@ -10,24 +10,32 @@ Current architecture uses a split pipeline:
 ## Executables
 
 - rclcpp_components component_container_mt (used by launch as the composite container)
+- raw_cloud_colorizer_color (standalone colorizer node)
+- raw_cloud_map_aggregator (standalone map aggregator node)
 
-## Default Launch
+## Launch Files
 
-Main launch file:
-- launch/colorizers.launch.py
-
-What it starts:
-- component raw_cloud_colorizer (plugin RawCloudColorizerColorNode)
-- component colored_cloud_map_aggregator (plugin ColoredCloudMapAggregatorNode)
-- optional rviz2 controlled by launch arg rviz (default true)
+Available launch files:
+- launch/colorizers_composed.launch.py
+  - Runs both nodes as composable components in one component_container_mt process.
+- launch/colorizer_only.launch.py
+  - Runs only the standalone colorization node executable.
+- launch/aggregator_only.launch.py
+  - Runs only the standalone map aggregator node executable.
 
 Examples:
 
-Launch with RViz (default):
-  ros2 launch pointcloud_colorizer colorizers.launch.py
+Run composed pipeline with RViz (default):
+  ros2 launch pointcloud_colorizer colorizers_composed.launch.py
 
-Launch without RViz:
-  ros2 launch pointcloud_colorizer colorizers.launch.py rviz:=false
+Run only colorization:
+  ros2 launch pointcloud_colorizer colorizer_only.launch.py
+
+Run only map aggregator:
+  ros2 launch pointcloud_colorizer aggregator_only.launch.py
+
+Disable RViz on any launch file:
+  ros2 launch pointcloud_colorizer <launch_file>.launch.py rviz:=false
 
 ## Config Files
 

@@ -310,4 +310,15 @@ private:
   Eigen::Matrix4f lidar_to_camera_transform_ = Eigen::Matrix4f::Identity();
 };
 
+#ifndef POINTCLOUD_COLORIZER_BUILD_STANDALONE
 RCLCPP_COMPONENTS_REGISTER_NODE(RawCloudColorizerColorNode)
+#else
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<RawCloudColorizerColorNode>(rclcpp::NodeOptions{});
+  rclcpp::spin(node);
+  rclcpp::shutdown();
+  return 0;
+}
+#endif

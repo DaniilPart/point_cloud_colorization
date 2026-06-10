@@ -201,4 +201,15 @@ private:
   float color_hash_max_load_factor_ = 0.7f;
 };
 
+#ifndef POINTCLOUD_COLORIZER_BUILD_STANDALONE
 RCLCPP_COMPONENTS_REGISTER_NODE(ColoredCloudMapAggregatorNode)
+#else
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<ColoredCloudMapAggregatorNode>(rclcpp::NodeOptions{});
+  rclcpp::spin(node);
+  rclcpp::shutdown();
+  return 0;
+}
+#endif

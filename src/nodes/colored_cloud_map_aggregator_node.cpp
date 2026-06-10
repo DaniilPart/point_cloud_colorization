@@ -4,19 +4,17 @@
 #include <stdexcept>
 #include <string>
 
+#include "pointcloud_colorizer/colored_cloud_map_aggregator_core.hpp"
 #include "pointcloud_colorizer/transform_utils.hpp"
-#include "pointcloud_colorizer/voxel_map_builder.hpp"
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
-#include "sensor_msgs/msg/point_cloud2.hpp"
 #include "nav_msgs/msg/odometry.hpp"
-#include "std_msgs/msg/header.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <Eigen/Dense>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
@@ -55,15 +53,15 @@ public:
 
     validate_configuration();
 
-    pointcloud_colorizer::VoxelMapBuilderConfig map_builder_config;
-    map_builder_config.estimator.voxel_size = map_voxel_size_;
-    map_builder_config.estimator.burn_in_samples = color_burnin_samples_;
-    map_builder_config.estimator.step_max = color_step_max_;
-    map_builder_config.estimator.ignore_placeholder_gray = color_ignore_placeholder_gray_;
-    map_builder_config.estimator.placeholder_gray_value = placeholder_gray_value_;
-    map_builder_config.estimator.hash_initial_capacity = color_hash_initial_capacity_;
-    map_builder_config.estimator.hash_max_load_factor = color_hash_max_load_factor_;
-    voxel_map_builder_ = std::make_unique<pointcloud_colorizer::VoxelMapBuilder>(map_builder_config);
+    pointcloud_colorizer::ColoredCloudMapAggregatorCoreConfig core_config;
+    core_config.map_builder.estimator.voxel_size = map_voxel_size_;
+    core_config.map_builder.estimator.burn_in_samples = color_burnin_samples_;
+    core_config.map_builder.estimator.step_max = color_step_max_;
+    core_config.map_builder.estimator.ignore_placeholder_gray = color_ignore_placeholder_gray_;
+    core_config.map_builder.estimator.placeholder_gray_value = placeholder_gray_value_;
+    core_config.map_builder.estimator.hash_initial_capacity = color_hash_initial_capacity_;
+    core_config.map_builder.estimator.hash_max_load_factor = color_hash_max_load_factor_;
+    aggregator_core_ = std::make_unique<pointcloud_colorizer::ColoredCloudMapAggregatorCore>(core_config);
 
     const auto sensor_qos = rmw_qos_profile_sensor_data;
     odometry_.subscribe(this, input_odometry_topic_, sensor_qos);
@@ -103,19 +101,6 @@ private:
     }
   }
 
-  void transform_colored_cloud_in_place(
-    pcl::PointCloud<pcl::PointXYZRGB> & cloud,
-    const Eigen::Matrix4f & transform) const
-  {
-    for (auto & point : cloud.points) {
-      const Eigen::Vector4f pt(point.x, point.y, point.z, 1.0f);
-      const Eigen::Vector4f transformed = transform * pt;
-      point.x = transformed.x();
-      point.y = transformed.y();
-      point.z = transformed.z();
-    }
-  }
-
   void sync_callback(
     const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg,
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr colored_cloud_msg)
@@ -123,46 +108,26 @@ private:
     auto cloud_in = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
     pcl::fromROSMsg(*colored_cloud_msg, *cloud_in);
 
-    Eigen::Quaternionf q_odom_lidar(
-      static_cast<float>(odom_msg->pose.pose.orientation.w),
-      static_cast<float>(odom_msg->pose.pose.orientation.x),
-      static_cast<float>(odom_msg->pose.pose.orientation.y),
-      static_cast<float>(odom_msg->pose.pose.orientation.z));
-
-    if (q_odom_lidar.norm() == 0.0f) {
+    std::string error_message;
+    if (!aggregator_core_->update_from_synced_messages(*odom_msg, *cloud_in, map_frame_id_, &error_message)) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(),
         *this->get_clock(),
         3000,
-        "Skipping synchronized callback: invalid odometry quaternion.");
-      return;
+        "Skipping synchronized callback: %s",
+        error_message.c_str());
     }
-    q_odom_lidar.normalize();
-
-    Eigen::Matrix4f t_odom_lidar = Eigen::Matrix4f::Identity();
-    t_odom_lidar.block<3, 3>(0, 0) = q_odom_lidar.toRotationMatrix();
-    t_odom_lidar(0, 3) = static_cast<float>(odom_msg->pose.pose.position.x);
-    t_odom_lidar(1, 3) = static_cast<float>(odom_msg->pose.pose.position.y);
-    t_odom_lidar(2, 3) = static_cast<float>(odom_msg->pose.pose.position.z);
-
-    transform_colored_cloud_in_place(*cloud_in, t_odom_lidar);
-
-    std_msgs::msg::Header map_header = odom_msg->header;
-    if (!map_frame_id_.empty()) {
-      map_header.frame_id = map_frame_id_;
-    }
-    voxel_map_builder_->update_from_colored_cloud(*cloud_in, map_header);
   }
 
   void map_publish_timer_callback()
   {
-    if (!voxel_map_builder_->has_pending_publish()) {
+    if (!aggregator_core_->has_pending_publish()) {
       return;
     }
 
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr map_cloud;
     std_msgs::msg::Header map_header;
-    if (!voxel_map_builder_->take_map_cloud(map_cloud, map_header)) {
+    if (!aggregator_core_->take_map_cloud(map_cloud, map_header)) {
       return;
     }
 
@@ -182,7 +147,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_publisher_;
   rclcpp::TimerBase::SharedPtr map_publish_timer_;
 
-  std::unique_ptr<pointcloud_colorizer::VoxelMapBuilder> voxel_map_builder_;
+  std::unique_ptr<pointcloud_colorizer::ColoredCloudMapAggregatorCore> aggregator_core_;
 
   std::string input_colored_cloud_topic_;
   std::string input_odometry_topic_;

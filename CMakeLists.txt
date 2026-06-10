@@ -95,9 +95,10 @@ add_colorizer_component(
 )
 add_colorizer_component(
   ColoredCloudMapAggregatorNode
-  src/colored_cloud_map_aggregator_node.cpp
-  src/voxel_color_estimator.cpp
-  src/voxel_map_builder.cpp
+  src/nodes/colored_cloud_map_aggregator_node.cpp
+  src/core/colored_cloud_map_aggregator_core.cpp
+  src/core/voxel_color_estimator.cpp
+  src/core/voxel_map_builder.cpp
 )
 
 add_colorizer_standalone(
@@ -107,9 +108,10 @@ add_colorizer_standalone(
 )
 add_colorizer_standalone(
   raw_cloud_map_aggregator
-  src/colored_cloud_map_aggregator_node.cpp
-  src/voxel_color_estimator.cpp
-  src/voxel_map_builder.cpp
+  src/nodes/colored_cloud_map_aggregator_node.cpp
+  src/core/colored_cloud_map_aggregator_core.cpp
+  src/core/voxel_color_estimator.cpp
+  src/core/voxel_map_builder.cpp
 )
 
 install(TARGETS

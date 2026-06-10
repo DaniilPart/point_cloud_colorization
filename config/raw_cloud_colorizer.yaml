@@ -5,8 +5,10 @@ raw_cloud_colorizer:
     input_image_topic_raw: /camera_front/image_raw
     camera_info_topic: /camera_front/camera_info
     output_cloud_topic: /colorizer/raw/colored_cloud
+    debug_image_topic: /colorizer/raw/debug_overlay
     output_frame_id: ""
     publish_only_colored_points: true
+    debug_overlay_point_radius: 2
     use_fixed_sync: false
     fixed_sync_image_stream: compressed
     source_selector_max_compressed_frames: 10

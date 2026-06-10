@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -5,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "pointcloud_colorizer/raw_cloud_colorizer_core.hpp"
 #include "pointcloud_colorizer/transform_utils.hpp"
 
 #include "rclcpp/rclcpp.hpp"
@@ -13,6 +15,7 @@
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "std_msgs/msg/header.hpp"
 
 #include <Eigen/Dense>
 #include <cv_bridge/cv_bridge.hpp>
@@ -74,6 +77,9 @@ public:
     output_cloud_topic_ = this->declare_parameter<std::string>("output_cloud_topic", "");
     output_frame_id_ = this->declare_parameter<std::string>("output_frame_id", "");
     publish_only_colored_points_ = this->declare_parameter<bool>("publish_only_colored_points", true);
+    debug_image_topic_ = this->declare_parameter<std::string>(
+      "debug_image_topic", "/colorizer/raw/debug_overlay");
+    debug_overlay_point_radius_ = std::max<int>(1, this->declare_parameter<int>("debug_overlay_point_radius", 2));
     use_fixed_sync_ = this->declare_parameter<bool>("use_fixed_sync", true);
     // Backward-compatible alias.
     use_fixed_sync_ = this->declare_parameter<bool>("use_fixed_compressed_sync", use_fixed_sync_);
@@ -119,9 +125,14 @@ public:
 
     transform_source_ = pointcloud_colorizer::parse_transform_source(transform_source_string_);
     validate_configuration();
+    initialize_core();
     initialize_transform();
 
     output_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_cloud_topic_, 10);
+    
+    debug_image_publisher_ = this->create_publisher<sensor_msgs::msg::Image>(
+      debug_image_topic_,
+      rclcpp::SensorDataQoS());
 
     camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
       camera_info_topic_,
@@ -151,6 +162,12 @@ public:
       output_cloud_topic_.c_str(),
       output_frame_id_.empty() ? "<input>" : output_frame_id_.c_str(),
       publish_only_colored_points_ ? "true" : "false");
+
+    if (debug_image_topic_.empty()) {
+      RCLCPP_INFO(this->get_logger(), "Debug image publisher disabled (debug_image_topic is empty)");
+    } else {
+      RCLCPP_INFO(this->get_logger(), "Debug image topic: %s", debug_image_topic_.c_str());
+    }
   }
 
 private:
@@ -336,29 +353,21 @@ private:
       "raw image not detected before selector timeout");
   }
 
-  bool is_sky_pixel(const cv::Vec3b & hsv_pixel, const int v, const int image_rows) const
+  void initialize_core()
   {
-    if (!sky_filter_enabled_) {
-      return false;
-    }
-
-    const int upper_region_limit =
-      static_cast<int>(std::ceil(sky_region_max_y_fraction_ * static_cast<double>(image_rows)));
-    const bool in_sky_region = sky_region_invert_y_
-      ? (v >= (image_rows - upper_region_limit))
-      : (v < upper_region_limit);
-    if (!in_sky_region) {
-      return false;
-    }
-
-    const int h = static_cast<int>(hsv_pixel[0]);
-    const int s = static_cast<int>(hsv_pixel[1]);
-    const int val = static_cast<int>(hsv_pixel[2]);
-
-    const bool blue_sky =
-      h >= sky_blue_h_min_ && h <= sky_blue_h_max_ && s >= sky_blue_s_min_ && val >= sky_blue_v_min_;
-    const bool bright_cloud = s <= sky_cloud_s_max_ && val >= sky_cloud_v_min_;
-    return blue_sky || bright_cloud;
+    pointcloud_colorizer::RawCloudColorizerCoreConfig config;
+    config.publish_only_colored_points = publish_only_colored_points_;
+    config.sky_filter.enabled = sky_filter_enabled_;
+    config.sky_filter.region_max_y_fraction = sky_region_max_y_fraction_;
+    config.sky_filter.region_invert_y = sky_region_invert_y_;
+    config.sky_filter.blue_h_min = sky_blue_h_min_;
+    config.sky_filter.blue_h_max = sky_blue_h_max_;
+    config.sky_filter.blue_s_min = sky_blue_s_min_;
+    config.sky_filter.blue_v_min = sky_blue_v_min_;
+    config.sky_filter.cloud_s_max = sky_cloud_s_max_;
+    config.sky_filter.cloud_v_min = sky_cloud_v_min_;
+    config.debug_point_radius = debug_overlay_point_radius_;
+    colorizer_core_ = std::make_unique<pointcloud_colorizer::RawCloudColorizerCore>(config);
   }
 
   void initialize_transform()
@@ -426,7 +435,7 @@ private:
       return;
     }
 
-    process_coloring(cloud_msg, cv_image);
+    process_coloring(cloud_msg, img_msg->header, cv_image);
   }
 
   void uncompressed_topic_callback(
@@ -441,11 +450,12 @@ private:
       return;
     }
 
-    process_coloring(cloud_msg, cv_image);
+    process_coloring(cloud_msg, img_msg->header, cv_image);
   }
 
   void process_coloring(
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg,
+    const std_msgs::msg::Header & image_header,
     const cv::Mat & cv_image)
   {
     if (!camera_info_received_) {
@@ -460,129 +470,44 @@ private:
     auto cloud_in = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     pcl::fromROSMsg(*cloud_msg, *cloud_in);
 
-    cv::Mat hsv_image;
-    if (sky_filter_enabled_) {
-      cv::cvtColor(cv_image, hsv_image, cv::COLOR_BGR2HSV);
-    }
-
     Eigen::Matrix4f t_lidar_camera = Eigen::Matrix4f::Identity();
     if (!get_lidar_to_camera_transform(rclcpp::Time(cloud_msg->header.stamp), t_lidar_camera)) {
       return;
     }
 
-    auto cloud_out = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
-    cloud_out->points.reserve(cloud_in->points.size());
+    const bool publish_debug_overlay = debug_image_publisher_ &&
+      (debug_image_publisher_->get_subscription_count() > 0 ||
+      debug_image_publisher_->get_intra_process_subscription_count() > 0);
 
-    std::vector<cv::Point3f> camera_points;
-    std::vector<pcl::PointXYZ> candidate_points;
-    std::vector<std::size_t> projected_indices;
-    std::vector<bool> remove_mask;
-    camera_points.reserve(cloud_in->points.size());
-    candidate_points.reserve(cloud_in->points.size());
-    projected_indices.reserve(cloud_in->points.size());
-    if (!publish_only_colored_points_) {
-      remove_mask.resize(cloud_in->points.size(), false);
+    pointcloud_colorizer::RawCloudColorizerProcessInput process_input;
+    process_input.cloud = cloud_in;
+    process_input.bgr_image = cv_image;
+    process_input.lidar_to_camera_transform = t_lidar_camera;
+    process_input.camera_matrix = camera_matrix_;
+    process_input.dist_coeffs = dist_coeffs_;
+
+    pointcloud_colorizer::RawCloudColorizerProcessOutput process_output;
+    try {
+      process_output = colorizer_core_->process(process_input, publish_debug_overlay);
+    } catch (const std::exception & ex) {
+      RCLCPP_ERROR(this->get_logger(), "Colorizer core processing failed: %s", ex.what());
+      return;
     }
-
-    for (const auto & point : cloud_in->points) {
-      if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
-        continue;
-      }
-
-      std::size_t output_index = 0;
-      if (!publish_only_colored_points_) {
-        pcl::PointXYZRGB color_point;
-        color_point.x = point.x;
-        color_point.y = point.y;
-        color_point.z = point.z;
-        color_point.r = 128;
-        color_point.g = 128;
-        color_point.b = 128;
-        cloud_out->points.push_back(color_point);
-        output_index = cloud_out->points.size() - 1;
-      }
-
-      const Eigen::Vector4f pt_lidar(point.x, point.y, point.z, 1.0f);
-      const Eigen::Vector4f pt_camera = t_lidar_camera * pt_lidar;
-      if (pt_camera.z() <= 0.0f) {
-        continue;
-      }
-
-      camera_points.emplace_back(pt_camera.x(), pt_camera.y(), pt_camera.z());
-      if (publish_only_colored_points_) {
-        candidate_points.push_back(point);
-      } else {
-        projected_indices.push_back(output_index);
-      }
-    }
-
-    if (!camera_points.empty()) {
-      std::vector<cv::Point2f> image_points;
-      cv::projectPoints(
-        camera_points,
-        zero_rotation_,
-        zero_translation_,
-        camera_matrix_,
-        dist_coeffs_,
-        image_points);
-
-      for (std::size_t i = 0; i < image_points.size(); ++i) {
-        const int u = cvRound(image_points[i].x);
-        const int v = cvRound(image_points[i].y);
-
-        if (u < 0 || u >= cv_image.cols || v < 0 || v >= cv_image.rows) {
-          continue;
-        }
-
-        const cv::Vec3b & color = cv_image.at<cv::Vec3b>(v, u);
-        if (sky_filter_enabled_ && is_sky_pixel(hsv_image.at<cv::Vec3b>(v, u), v, cv_image.rows)) {
-          if (!publish_only_colored_points_) {
-            remove_mask[projected_indices[i]] = true;
-          }
-          continue;
-        }
-
-        if (publish_only_colored_points_) {
-          pcl::PointXYZRGB color_point;
-          color_point.x = candidate_points[i].x;
-          color_point.y = candidate_points[i].y;
-          color_point.z = candidate_points[i].z;
-          color_point.b = color[0];
-          color_point.g = color[1];
-          color_point.r = color[2];
-          cloud_out->points.push_back(color_point);
-        } else {
-          auto & color_point = cloud_out->points[projected_indices[i]];
-          color_point.b = color[0];
-          color_point.g = color[1];
-          color_point.r = color[2];
-        }
-      }
-    }
-
-    if (!publish_only_colored_points_ && !remove_mask.empty()) {
-      auto compacted_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
-      compacted_cloud->points.reserve(cloud_out->points.size());
-      for (std::size_t i = 0; i < cloud_out->points.size(); ++i) {
-        if (!remove_mask[i]) {
-          compacted_cloud->points.push_back(cloud_out->points[i]);
-        }
-      }
-      cloud_out = compacted_cloud;
-    }
-
-    cloud_out->width = cloud_out->points.size();
-    cloud_out->height = 1;
-    cloud_out->is_dense = true;
 
     sensor_msgs::msg::PointCloud2 output_msg;
-    pcl::toROSMsg(*cloud_out, output_msg);
+    pcl::toROSMsg(*process_output.colored_cloud, output_msg);
     output_msg.header = cloud_msg->header;
     if (!output_frame_id_.empty()) {
       output_msg.header.frame_id = output_frame_id_;
     }
 
     output_publisher_->publish(output_msg);
+
+    if (publish_debug_overlay && process_output.has_debug_overlay) {
+      sensor_msgs::msg::Image::SharedPtr debug_msg =
+        cv_bridge::CvImage(image_header, "bgr8", process_output.debug_overlay).toImageMsg();
+      debug_image_publisher_->publish(*debug_msg);
+    }
   }
 
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> cloud_sub_;
@@ -597,21 +522,22 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr output_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_publisher_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   cv::Mat camera_matrix_;
   cv::Mat dist_coeffs_;
-  const cv::Vec3d zero_rotation_{0.0, 0.0, 0.0};
-  const cv::Vec3d zero_translation_{0.0, 0.0, 0.0};
   std::mutex source_selector_mutex_;
+  std::unique_ptr<pointcloud_colorizer::RawCloudColorizerCore> colorizer_core_;
 
   std::string input_cloud_topic_;
   std::string input_compressed_image_topic_;
   std::string input_uncompressed_image_topic_;
   std::string camera_info_topic_;
   std::string output_cloud_topic_;
+  std::string debug_image_topic_;
   std::string output_frame_id_;
   std::string transform_source_string_;
   std::string camera_frame_id_;
@@ -625,6 +551,7 @@ private:
 
   int sync_queue_size_ = 10;
   int source_selector_max_compressed_frames_ = 10;
+  int debug_overlay_point_radius_ = 2;
   int compressed_detection_count_ = 0;
   bool publish_only_colored_points_ = true;
   bool use_fixed_sync_ = true;

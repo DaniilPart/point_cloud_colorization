@@ -91,6 +91,7 @@ endfunction()
 add_colorizer_component(
   RawCloudColorizerColorNode
   src/raw_cloud_colorizer_color_node.cpp
+  src/raw_cloud_colorizer_core.cpp
 )
 add_colorizer_component(
   ColoredCloudMapAggregatorNode
@@ -102,6 +103,7 @@ add_colorizer_component(
 add_colorizer_standalone(
   raw_cloud_colorizer_color
   src/raw_cloud_colorizer_color_node.cpp
+  src/raw_cloud_colorizer_core.cpp
 )
 add_colorizer_standalone(
   raw_cloud_map_aggregator

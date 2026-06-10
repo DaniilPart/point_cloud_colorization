@@ -1,5 +1,6 @@
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
+#include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 
 #include <Eigen/Dense>
@@ -32,21 +34,57 @@ using pointcloud_colorizer::TransformSource;
 
 class RawCloudColorizerColorNode : public rclcpp::Node
 {
-  using RawSyncPolicy = message_filters::sync_policies::ApproximateTime<
+  using CompressedSyncPolicy = message_filters::sync_policies::ApproximateTime<
     sensor_msgs::msg::PointCloud2,
     sensor_msgs::msg::CompressedImage>;
-  using RawSync = message_filters::Synchronizer<RawSyncPolicy>;
+  using CompressedSync = message_filters::Synchronizer<CompressedSyncPolicy>;
+  using UncompressedSyncPolicy = message_filters::sync_policies::ApproximateTime<
+    sensor_msgs::msg::PointCloud2,
+    sensor_msgs::msg::Image>;
+  using UncompressedSync = message_filters::Synchronizer<UncompressedSyncPolicy>;
+
+  enum class ImageSource
+  {
+    Unknown,
+    Uncompressed,
+    Compressed,
+  };
 
 public:
   explicit RawCloudColorizerColorNode(const rclcpp::NodeOptions & options)
   : Node("raw_cloud_colorizer", options)
   {
     input_cloud_topic_ = this->declare_parameter<std::string>("input_cloud_topic", "");
-    input_image_topic_ = this->declare_parameter<std::string>("input_image_topic", "");
+    fixed_sync_image_stream_ = this->declare_parameter<std::string>(
+      "fixed_sync_image_stream", "compressed");
+    input_compressed_image_topic_ = this->declare_parameter<std::string>("input_image_topic", "");
+    input_uncompressed_image_topic_ = this->declare_parameter<std::string>("input_image_topic_raw", "");
+    // Backward-compatible aliases.
+    const auto legacy_input_compressed_image_topic = this->declare_parameter<std::string>(
+      "input_compressed_image_topic", "");
+    const auto legacy_input_uncompressed_image_topic = this->declare_parameter<std::string>(
+      "input_uncompressed_image_topic", "");
+    if (input_compressed_image_topic_.empty()) {
+      input_compressed_image_topic_ = legacy_input_compressed_image_topic;
+    }
+    if (input_uncompressed_image_topic_.empty()) {
+      input_uncompressed_image_topic_ = legacy_input_uncompressed_image_topic;
+    }
     camera_info_topic_ = this->declare_parameter<std::string>("camera_info_topic", "");
     output_cloud_topic_ = this->declare_parameter<std::string>("output_cloud_topic", "");
     output_frame_id_ = this->declare_parameter<std::string>("output_frame_id", "");
     publish_only_colored_points_ = this->declare_parameter<bool>("publish_only_colored_points", true);
+    use_fixed_sync_ = this->declare_parameter<bool>("use_fixed_sync", true);
+    // Backward-compatible alias.
+    use_fixed_sync_ = this->declare_parameter<bool>("use_fixed_compressed_sync", use_fixed_sync_);
+    // Backward-compatible alias.
+    fixed_sync_image_stream_ = this->declare_parameter<std::string>(
+      "image_stream", fixed_sync_image_stream_);
+    source_selector_max_compressed_frames_ = std::max<int>(
+      1,
+      this->declare_parameter<int>("source_selector_max_compressed_frames", 10));
+    source_selector_max_wait_ = rclcpp::Duration::from_seconds(
+      this->declare_parameter<double>("source_selector_max_wait_sec", 0.5));
     transform_source_string_ = this->declare_parameter<std::string>("transform_source", "config");
     camera_frame_id_ = this->declare_parameter<std::string>("camera_frame_id", "");
     lidar_frame_id_ = this->declare_parameter<std::string>("lidar_frame_id", "");
@@ -66,16 +104,22 @@ public:
     sky_cloud_s_max_ = this->declare_parameter<int>("sky_cloud_s_max", 40);
     sky_cloud_v_min_ = this->declare_parameter<int>("sky_cloud_v_min", 155);
 
+    if (!use_fixed_sync_ && input_uncompressed_image_topic_.empty() &&
+      ends_with(input_compressed_image_topic_, "/compressed"))
+    {
+      input_uncompressed_image_topic_ =
+        input_compressed_image_topic_.substr(
+        0,
+        input_compressed_image_topic_.size() - std::string("/compressed").size());
+    }
+
+    if (fixed_sync_image_stream_ != "compressed" && fixed_sync_image_stream_ != "raw") {
+      throw std::runtime_error("fixed_sync_image_stream must be one of: compressed, raw");
+    }
+
     transform_source_ = pointcloud_colorizer::parse_transform_source(transform_source_string_);
     validate_configuration();
     initialize_transform();
-
-    const auto sensor_qos = rmw_qos_profile_sensor_data;
-    cloud_sub_.subscribe(this, input_cloud_topic_, sensor_qos);
-    image_sub_.subscribe(this, input_image_topic_, sensor_qos);
-
-    sync_ = std::make_shared<RawSync>(RawSyncPolicy(sync_queue_size_), cloud_sub_, image_sub_);
-    sync_->registerCallback(std::bind(&RawCloudColorizerColorNode::topic_callback, this, _1, _2));
 
     output_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_cloud_topic_, 10);
 
@@ -84,11 +128,25 @@ public:
       rclcpp::SensorDataQoS(),
       std::bind(&RawCloudColorizerColorNode::camera_info_callback, this, std::placeholders::_1));
 
+    if (use_fixed_sync_) {
+      if (fixed_sync_image_stream_ == "raw") {
+        initialize_uncompressed_synchronizer();
+        selected_source_ = ImageSource::Uncompressed;
+      } else {
+        initialize_compressed_synchronizer();
+        selected_source_ = ImageSource::Compressed;
+      }
+    } else {
+      initialize_source_selector();
+    }
+
     RCLCPP_INFO(
       this->get_logger(),
-      "Raw colorizer(color-only): cloud=%s image=%s camera_info=%s output=%s output_frame=%s publish_only_colored_points=%s",
+      "Raw colorizer(color-only): cloud=%s image_compressed=%s image_raw=%s selector=%s camera_info=%s output=%s output_frame=%s publish_only_colored_points=%s",
       input_cloud_topic_.c_str(),
-      input_image_topic_.c_str(),
+      input_compressed_image_topic_.c_str(),
+      input_uncompressed_image_topic_.c_str(),
+      use_fixed_sync_ ? "disabled" : "enabled",
       camera_info_topic_.c_str(),
       output_cloud_topic_.c_str(),
       output_frame_id_.empty() ? "<input>" : output_frame_id_.c_str(),
@@ -99,9 +157,17 @@ private:
   void validate_configuration() const
   {
     pointcloud_colorizer::require_non_empty(input_cloud_topic_, "input_cloud_topic");
-    pointcloud_colorizer::require_non_empty(input_image_topic_, "input_image_topic");
+    pointcloud_colorizer::require_non_empty(input_compressed_image_topic_, "input_image_topic");
     pointcloud_colorizer::require_non_empty(camera_info_topic_, "camera_info_topic");
     pointcloud_colorizer::require_non_empty(output_cloud_topic_, "output_cloud_topic");
+
+    if (!use_fixed_sync_) {
+      pointcloud_colorizer::require_non_empty(input_uncompressed_image_topic_, "input_image_topic_raw");
+    }
+
+    if (use_fixed_sync_ && fixed_sync_image_stream_ == "raw") {
+      pointcloud_colorizer::require_non_empty(input_uncompressed_image_topic_, "input_image_topic_raw");
+    }
 
     if (transform_source_ == TransformSource::TfTree) {
       pointcloud_colorizer::require_non_empty(camera_frame_id_, "camera_frame_id");
@@ -121,6 +187,153 @@ private:
     {
       throw std::runtime_error("sky HSV thresholds must be in [0, 255]");
     }
+  }
+
+  static bool ends_with(const std::string & value, const std::string & suffix)
+  {
+    if (value.size() < suffix.size()) {
+      return false;
+    }
+    return value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+  }
+
+  void initialize_source_selector()
+  {
+    pointcloud_colorizer::require_non_empty(input_uncompressed_image_topic_, "input_image_topic_raw");
+
+    compressed_detection_count_ = 0;
+    selected_source_ = ImageSource::Unknown;
+    source_selector_start_time_ = this->now();
+
+    uncompressed_detection_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+      input_uncompressed_image_topic_,
+      rclcpp::SensorDataQoS(),
+      std::bind(&RawCloudColorizerColorNode::uncompressed_detection_callback, this, std::placeholders::_1));
+
+    compressed_detection_sub_ = this->create_subscription<sensor_msgs::msg::CompressedImage>(
+      input_compressed_image_topic_,
+      rclcpp::SensorDataQoS(),
+      std::bind(&RawCloudColorizerColorNode::compressed_detection_callback, this, std::placeholders::_1));
+
+    selector_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(50),
+      std::bind(&RawCloudColorizerColorNode::source_selector_timer_callback, this));
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Image source selector started: waiting up to %d compressed frames or %.3fs for raw image topic=%s",
+      source_selector_max_compressed_frames_,
+      source_selector_max_wait_.seconds(),
+      input_uncompressed_image_topic_.c_str());
+  }
+
+  void initialize_compressed_synchronizer()
+  {
+    const auto sensor_qos = rmw_qos_profile_sensor_data;
+    cloud_sub_.unsubscribe();
+    compressed_image_sub_.unsubscribe();
+    uncompressed_image_sub_.unsubscribe();
+
+    cloud_sub_.subscribe(this, input_cloud_topic_, sensor_qos);
+    compressed_image_sub_.subscribe(this, input_compressed_image_topic_, sensor_qos);
+    compressed_sync_ = std::make_shared<CompressedSync>(
+      CompressedSyncPolicy(sync_queue_size_),
+      cloud_sub_,
+      compressed_image_sub_);
+    compressed_sync_->registerCallback(
+      std::bind(&RawCloudColorizerColorNode::compressed_topic_callback, this, _1, _2));
+    uncompressed_sync_.reset();
+  }
+
+  void initialize_uncompressed_synchronizer()
+  {
+    const auto sensor_qos = rmw_qos_profile_sensor_data;
+    cloud_sub_.unsubscribe();
+    compressed_image_sub_.unsubscribe();
+    uncompressed_image_sub_.unsubscribe();
+
+    cloud_sub_.subscribe(this, input_cloud_topic_, sensor_qos);
+    uncompressed_image_sub_.subscribe(this, input_uncompressed_image_topic_, sensor_qos);
+    uncompressed_sync_ = std::make_shared<UncompressedSync>(
+      UncompressedSyncPolicy(sync_queue_size_),
+      cloud_sub_,
+      uncompressed_image_sub_);
+    uncompressed_sync_->registerCallback(
+      std::bind(&RawCloudColorizerColorNode::uncompressed_topic_callback, this, _1, _2));
+    compressed_sync_.reset();
+  }
+
+  void stop_source_selector_subscriptions()
+  {
+    if (selector_timer_) {
+      selector_timer_->cancel();
+      selector_timer_.reset();
+    }
+    compressed_detection_sub_.reset();
+    uncompressed_detection_sub_.reset();
+  }
+
+  void select_source_and_initialize(const ImageSource source, const char * reason)
+  {
+    {
+      std::lock_guard<std::mutex> lock(source_selector_mutex_);
+      if (selected_source_ != ImageSource::Unknown) {
+        return;
+      }
+      selected_source_ = source;
+    }
+
+    stop_source_selector_subscriptions();
+
+    if (source == ImageSource::Uncompressed) {
+      initialize_uncompressed_synchronizer();
+      RCLCPP_INFO(this->get_logger(), "Selected uncompressed image source: %s", reason);
+      return;
+    }
+
+    initialize_compressed_synchronizer();
+    RCLCPP_INFO(this->get_logger(), "Selected compressed image source: %s", reason);
+  }
+
+  void uncompressed_detection_callback(const sensor_msgs::msg::Image::ConstSharedPtr)
+  {
+    select_source_and_initialize(ImageSource::Uncompressed, "raw image detected during selector phase");
+  }
+
+  void compressed_detection_callback(const sensor_msgs::msg::CompressedImage::ConstSharedPtr)
+  {
+    {
+      std::lock_guard<std::mutex> lock(source_selector_mutex_);
+      if (selected_source_ != ImageSource::Unknown) {
+        return;
+      }
+      ++compressed_detection_count_;
+      if (compressed_detection_count_ < source_selector_max_compressed_frames_) {
+        return;
+      }
+    }
+
+    select_source_and_initialize(
+      ImageSource::Compressed,
+      "raw image not detected within compressed frame threshold");
+  }
+
+  void source_selector_timer_callback()
+  {
+    {
+      std::lock_guard<std::mutex> lock(source_selector_mutex_);
+      if (selected_source_ != ImageSource::Unknown || compressed_detection_count_ == 0) {
+        return;
+      }
+
+      if ((this->now() - source_selector_start_time_) < source_selector_max_wait_) {
+        return;
+      }
+    }
+
+    select_source_and_initialize(
+      ImageSource::Compressed,
+      "raw image not detected before selector timeout");
   }
 
   bool is_sky_pixel(const cv::Vec3b & hsv_pixel, const int v, const int image_rows) const
@@ -201,9 +414,39 @@ private:
     }
   }
 
-  void topic_callback(
+  void compressed_topic_callback(
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg,
     const sensor_msgs::msg::CompressedImage::ConstSharedPtr img_msg)
+  {
+    cv::Mat cv_image;
+    try {
+      cv_image = cv_bridge::toCvCopy(img_msg, "bgr8")->image;
+    } catch (const cv_bridge::Exception & e) {
+      RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+      return;
+    }
+
+    process_coloring(cloud_msg, cv_image);
+  }
+
+  void uncompressed_topic_callback(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg,
+    const sensor_msgs::msg::Image::ConstSharedPtr img_msg)
+  {
+    cv::Mat cv_image;
+    try {
+      cv_image = cv_bridge::toCvCopy(img_msg, "bgr8")->image;
+    } catch (const cv_bridge::Exception & e) {
+      RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+      return;
+    }
+
+    process_coloring(cloud_msg, cv_image);
+  }
+
+  void process_coloring(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg,
+    const cv::Mat & cv_image)
   {
     if (!camera_info_received_) {
       RCLCPP_WARN_THROTTLE(
@@ -216,14 +459,6 @@ private:
 
     auto cloud_in = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     pcl::fromROSMsg(*cloud_msg, *cloud_in);
-
-    cv::Mat cv_image;
-    try {
-      cv_image = cv_bridge::toCvCopy(img_msg, "bgr8")->image;
-    } catch (const cv_bridge::Exception & e) {
-      RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-      return;
-    }
 
     cv::Mat hsv_image;
     if (sky_filter_enabled_) {
@@ -351,8 +586,14 @@ private:
   }
 
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> cloud_sub_;
-  message_filters::Subscriber<sensor_msgs::msg::CompressedImage> image_sub_;
-  std::shared_ptr<RawSync> sync_;
+  message_filters::Subscriber<sensor_msgs::msg::CompressedImage> compressed_image_sub_;
+  message_filters::Subscriber<sensor_msgs::msg::Image> uncompressed_image_sub_;
+  std::shared_ptr<CompressedSync> compressed_sync_;
+  std::shared_ptr<UncompressedSync> uncompressed_sync_;
+
+  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_detection_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr uncompressed_detection_sub_;
+  rclcpp::TimerBase::SharedPtr selector_timer_;
 
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr output_publisher_;
@@ -364,9 +605,11 @@ private:
   cv::Mat dist_coeffs_;
   const cv::Vec3d zero_rotation_{0.0, 0.0, 0.0};
   const cv::Vec3d zero_translation_{0.0, 0.0, 0.0};
+  std::mutex source_selector_mutex_;
 
   std::string input_cloud_topic_;
-  std::string input_image_topic_;
+  std::string input_compressed_image_topic_;
+  std::string input_uncompressed_image_topic_;
   std::string camera_info_topic_;
   std::string output_cloud_topic_;
   std::string output_frame_id_;
@@ -377,10 +620,17 @@ private:
   std::vector<double> camera_to_lidar_matrix_values_;
   TransformSource transform_source_ = TransformSource::Config;
   rclcpp::Duration transform_lookup_timeout_ = rclcpp::Duration::from_seconds(0.1);
+  rclcpp::Duration source_selector_max_wait_ = rclcpp::Duration::from_seconds(0.5);
+  rclcpp::Time source_selector_start_time_;
 
   int sync_queue_size_ = 10;
+  int source_selector_max_compressed_frames_ = 10;
+  int compressed_detection_count_ = 0;
   bool publish_only_colored_points_ = true;
+  bool use_fixed_sync_ = true;
   bool camera_info_received_ = false;
+  ImageSource selected_source_ = ImageSource::Unknown;
+  std::string fixed_sync_image_stream_ = "compressed";
 
   bool sky_filter_enabled_ = true;
   double sky_region_max_y_fraction_ = 0.5;

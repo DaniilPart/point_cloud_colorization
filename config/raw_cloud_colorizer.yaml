@@ -1,11 +1,16 @@
 raw_cloud_colorizer:
   ros__parameters:
-    input_cloud_topic: /liorf/deskew/cloud_deskewed
-    input_image_topic: /basler_front/image_color/compressed
-    camera_info_topic: /basler_front/camera_info
+    input_cloud_topic: /liorf/mapping/keyframes/cloud_deskewed_downsampled
+    input_image_topic: /camera_front/image_raw/compressed
+    input_image_topic_raw: /camera_front/image_raw
+    camera_info_topic: /camera_front/camera_info
     output_cloud_topic: /colorizer/raw/colored_cloud
     output_frame_id: ""
     publish_only_colored_points: true
+    use_fixed_sync: false
+    fixed_sync_image_stream: compressed
+    source_selector_max_compressed_frames: 10
+    source_selector_max_wait_sec: 0.5
     transform_source: config
     camera_frame_id: pylon_camera
     lidar_frame_id: os1/os_lidar
@@ -19,7 +24,7 @@ raw_cloud_colorizer:
       0.0, 0.0, 0.0, 1.0
     ]
 
-    sky_filter_enabled: false
+    sky_filter_enabled: true
     sky_region_max_y_fraction: 0.5
     sky_region_invert_y: true
     sky_blue_h_min: 90

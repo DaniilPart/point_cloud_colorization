@@ -19,6 +19,8 @@ struct VoxelColorEstimatorConfig
   int step_max = 16;
   bool ignore_placeholder_gray = true;
   int placeholder_gray_value = 128;
+  std::size_t hash_initial_capacity = 262144;
+  float hash_max_load_factor = 0.7f;
 };
 
 struct VoxelColorEstimatorStats
@@ -42,6 +44,9 @@ public:
 
   const VoxelColorEstimatorStats & stats() const;
   std::size_t voxel_count() const;
+  std::size_t bucket_count() const;
+  float load_factor() const;
+  float max_load_factor() const;
 
 private:
   struct VoxelKey

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace pointcloud_colorizer
 {
@@ -12,6 +13,14 @@ namespace
 int clamp_color(int value)
 {
   return std::clamp(value, 0, 255);
+}
+
+std::uint64_t splitmix64(std::uint64_t x)
+{
+  x += 0x9e3779b97f4a7c15ULL;
+  x = (x ^ (x >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27U)) * 0x94d049bb133111ebULL;
+  return x ^ (x >> 31U);
 }
 
 }  // namespace
@@ -25,6 +34,12 @@ VoxelColorEstimator::VoxelColorEstimator(const VoxelColorEstimatorConfig & confi
   config_.burn_in_samples = std::max(1, config_.burn_in_samples);
   config_.step_max = std::max(1, config_.step_max);
   config_.placeholder_gray_value = clamp_color(config_.placeholder_gray_value);
+  config_.hash_max_load_factor = std::clamp(config_.hash_max_load_factor, 0.5f, 0.95f);
+
+  voxels_.max_load_factor(config_.hash_max_load_factor);
+  if (config_.hash_initial_capacity > 0) {
+    voxels_.reserve(config_.hash_initial_capacity);
+  }
 }
 
 void VoxelColorEstimator::reset()
@@ -40,10 +55,10 @@ bool VoxelColorEstimator::VoxelKey::operator==(const VoxelKey & other) const
 
 std::size_t VoxelColorEstimator::VoxelKeyHash::operator()(const VoxelKey & key) const
 {
-  std::size_t hx = std::hash<int>{}(key.x);
-  std::size_t hy = std::hash<int>{}(key.y);
-  std::size_t hz = std::hash<int>{}(key.z);
-  return hx ^ (hy << 1U) ^ (hz << 2U);
+  const std::uint64_t x = splitmix64(static_cast<std::uint32_t>(key.x));
+  const std::uint64_t y = splitmix64(static_cast<std::uint32_t>(key.y));
+  const std::uint64_t z = splitmix64(static_cast<std::uint32_t>(key.z));
+  return static_cast<std::size_t>(x ^ (y << 1U) ^ (z << 2U));
 }
 
 VoxelColorEstimator::VoxelKey VoxelColorEstimator::make_key(float x, float y, float z) const
@@ -175,6 +190,21 @@ const VoxelColorEstimatorStats & VoxelColorEstimator::stats() const
 std::size_t VoxelColorEstimator::voxel_count() const
 {
   return voxels_.size();
+}
+
+std::size_t VoxelColorEstimator::bucket_count() const
+{
+  return voxels_.bucket_count();
+}
+
+float VoxelColorEstimator::load_factor() const
+{
+  return voxels_.load_factor();
+}
+
+float VoxelColorEstimator::max_load_factor() const
+{
+  return voxels_.max_load_factor();
 }
 
 }  // namespace pointcloud_colorizer

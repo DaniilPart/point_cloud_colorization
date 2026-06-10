@@ -15,6 +15,7 @@
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "diagnostic_msgs/msg/key_value.hpp"
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
+#include "std_msgs/msg/header.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
@@ -93,11 +94,17 @@ public:
       "warning_throttle_sec", 5.0);
     startup_grace_period_sec_ = this->declare_parameter<double>(
       "startup_grace_period_sec", 8.0);
+    map_publish_interval_sec_ = this->declare_parameter<double>(
+      "map_publish_interval_sec", 1.0);
     color_burnin_samples_ = this->declare_parameter<int>("color_burnin_samples", 5);
     color_step_max_ = this->declare_parameter<int>("color_step_max", 16);
     color_ignore_placeholder_gray_ = this->declare_parameter<bool>(
       "color_ignore_placeholder_gray", true);
     placeholder_gray_value_ = this->declare_parameter<int>("placeholder_gray_value", 128);
+    color_hash_initial_capacity_ = static_cast<std::size_t>(
+      std::max<int>(0, this->declare_parameter<int>("color_hash_initial_capacity", 262144)));
+    color_hash_max_load_factor_ = static_cast<float>(
+      this->declare_parameter<double>("color_hash_max_load_factor", 0.7));
 
     startup_time_ = this->now();
 
@@ -111,6 +118,8 @@ public:
     estimator_config.step_max = color_step_max_;
     estimator_config.ignore_placeholder_gray = color_ignore_placeholder_gray_;
     estimator_config.placeholder_gray_value = placeholder_gray_value_;
+    estimator_config.hash_initial_capacity = color_hash_initial_capacity_;
+    estimator_config.hash_max_load_factor = color_hash_max_load_factor_;
     voxel_color_estimator_ = std::make_unique<pointcloud_colorizer::VoxelColorEstimator>(
       estimator_config);
 
@@ -158,6 +167,12 @@ public:
       std::chrono::duration_cast<std::chrono::nanoseconds>(health_period),
       std::bind(&RegisteredCloudColorizerNode::health_timer_callback, this));
 
+    const auto map_publish_period = std::chrono::duration<double>(
+      std::max(0.2, map_publish_interval_sec_));
+    map_publish_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(map_publish_period),
+      std::bind(&RegisteredCloudColorizerNode::map_publish_timer_callback, this));
+
     camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
         camera_info_topic_,
         rclcpp::SensorDataQoS(),
@@ -192,11 +207,14 @@ public:
         diagnostics_topic_.c_str());
       RCLCPP_INFO(
         this->get_logger(),
-        "Registered color filter: burnin_samples=%d step_max=%d ignore_placeholder_gray=%s placeholder_gray_value=%d",
+        "Registered color filter: burnin_samples=%d step_max=%d ignore_placeholder_gray=%s placeholder_gray_value=%d hash_initial_capacity=%zu hash_max_load_factor=%.2f map_publish_interval_sec=%.2f",
         color_burnin_samples_,
         color_step_max_,
         color_ignore_placeholder_gray_ ? "true" : "false",
-        placeholder_gray_value_);
+        placeholder_gray_value_,
+        color_hash_initial_capacity_,
+        color_hash_max_load_factor_,
+        map_publish_interval_sec_);
   }
 
 private:
@@ -454,17 +472,28 @@ private:
     for (const auto & point : cloud_out->points) {
       voxel_color_estimator_->update(point);
     }
+    last_map_source_header_ = cloud_msg->header;
+    have_map_header_ = true;
+    map_publish_pending_ = true;
+  }
+
+  void map_publish_timer_callback()
+  {
+    if (!map_publish_pending_ || !have_map_header_) {
+      return;
+    }
 
     const auto map_cloud = voxel_color_estimator_->build_cloud();
 
     sensor_msgs::msg::PointCloud2 map_msg;
     pcl::toROSMsg(*map_cloud, map_msg);
-    map_msg.header = cloud_msg->header;
+    map_msg.header = last_map_source_header_;
     if (!map_frame_id_.empty()) {
       map_msg.header.frame_id = map_frame_id_;
     }
     map_publisher_->publish(map_msg);
     ++map_publish_count_;
+    map_publish_pending_ = false;
   }
 
   bool is_stale(bool seen, const rclcpp::Time & last_time, const rclcpp::Time & now) const
@@ -539,6 +568,11 @@ private:
     add_value("voxel_burnin_updates", std::to_string(voxel_color_estimator_->stats().voxel_burnin_updates));
     add_value("voxel_filtered_updates", std::to_string(voxel_color_estimator_->stats().voxel_filtered_updates));
     add_value("voxel_skipped_placeholder", std::to_string(voxel_color_estimator_->stats().voxel_skipped_placeholder));
+    add_value("voxel_hash_bucket_count", std::to_string(voxel_color_estimator_->bucket_count()));
+    add_value("voxel_hash_load_factor", std::to_string(voxel_color_estimator_->load_factor()));
+    add_value("voxel_hash_max_load_factor", std::to_string(voxel_color_estimator_->max_load_factor()));
+    add_value("map_publish_pending", map_publish_pending_ ? "true" : "false");
+    add_value("map_publish_interval_sec", std::to_string(map_publish_interval_sec_));
 
     diagnostics.status.push_back(status);
     diagnostics_publisher_->publish(diagnostics);
@@ -659,6 +693,7 @@ private:
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   rclcpp::TimerBase::SharedPtr health_timer_;
+  rclcpp::TimerBase::SharedPtr map_publish_timer_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
@@ -692,10 +727,13 @@ private:
   double input_stale_timeout_sec_ = 2.0;
   double warning_throttle_sec_ = 5.0;
   double startup_grace_period_sec_ = 8.0;
+  double map_publish_interval_sec_ = 1.0;
   int color_burnin_samples_ = 5;
   int color_step_max_ = 16;
   bool color_ignore_placeholder_gray_ = true;
   int placeholder_gray_value_ = 128;
+  std::size_t color_hash_initial_capacity_ = 262144;
+  float color_hash_max_load_factor_ = 0.7f;
   std::string diagnostics_topic_ = "/diagnostics";
   std::uint8_t last_health_level_ = diagnostic_msgs::msg::DiagnosticStatus::OK;
   std::string last_health_summary_;
@@ -721,6 +759,9 @@ private:
   std::uint64_t transform_lookup_failure_count_ = 0;
   std::uint64_t skipped_missing_camera_info_count_ = 0;
   std::uint64_t zero_output_cloud_count_ = 0;
+  std_msgs::msg::Header last_map_source_header_;
+  bool have_map_header_ = false;
+  bool map_publish_pending_ = false;
   Eigen::Matrix4f camera_to_lidar_transform_ = Eigen::Matrix4f::Identity();
 };
 

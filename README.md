@@ -43,6 +43,10 @@ Disable RViz on any launch file:
   - Parameters for color node (raw cloud + image + camera info -> colored cloud)
 - config/colored_cloud_map_aggregator.yaml
   - Parameters for map aggregator (colored cloud + odometry -> naive_map)
+  - Includes periodic PLY save controls:
+    - `map_save_interval_sec` (default `5.0`)
+    - `map_save_ply_path` (output PLY file path)
+    - `map_save_append_start_timestamp` (default `true`, appends experiment start time to filename)
 
 ## Main Topics
 

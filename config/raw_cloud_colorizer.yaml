@@ -11,9 +11,20 @@ raw_cloud_colorizer:
     lidar_frame_id: os1/os_lidar
     transform_lookup_timeout_sec: 0.1
     sync_queue_size: 10
+
     camera_to_lidar_matrix: [
       0.019, 0.0, -1.0, -0.058,
       -1.0, 0.0, -0.019, -0.001,
       0.0, 1.0, 0.0, -0.145,
       0.0, 0.0, 0.0, 1.0
     ]
+
+    sky_filter_enabled: false
+    sky_region_max_y_fraction: 0.5
+    sky_region_invert_y: true
+    sky_blue_h_min: 90
+    sky_blue_h_max: 130
+    sky_blue_s_min: 25
+    sky_blue_v_min: 135
+    sky_cloud_s_max: 40
+    sky_cloud_v_min: 155

@@ -56,6 +56,16 @@ public:
       this->declare_parameter<double>("transform_lookup_timeout_sec", 0.1));
     sync_queue_size_ = std::max<int>(1, this->declare_parameter<int>("sync_queue_size", 10));
 
+    sky_filter_enabled_ = this->declare_parameter<bool>("sky_filter_enabled", true);
+    sky_region_max_y_fraction_ = this->declare_parameter<double>("sky_region_max_y_fraction", 0.5);
+    sky_region_invert_y_ = this->declare_parameter<bool>("sky_region_invert_y", false);
+    sky_blue_h_min_ = this->declare_parameter<int>("sky_blue_h_min", 90);
+    sky_blue_h_max_ = this->declare_parameter<int>("sky_blue_h_max", 130);
+    sky_blue_s_min_ = this->declare_parameter<int>("sky_blue_s_min", 25);
+    sky_blue_v_min_ = this->declare_parameter<int>("sky_blue_v_min", 135);
+    sky_cloud_s_max_ = this->declare_parameter<int>("sky_cloud_s_max", 40);
+    sky_cloud_v_min_ = this->declare_parameter<int>("sky_cloud_v_min", 155);
+
     transform_source_ = pointcloud_colorizer::parse_transform_source(transform_source_string_);
     validate_configuration();
     initialize_transform();
@@ -97,6 +107,45 @@ private:
       pointcloud_colorizer::require_non_empty(camera_frame_id_, "camera_frame_id");
       pointcloud_colorizer::require_non_empty(lidar_frame_id_, "lidar_frame_id");
     }
+
+    if (sky_region_max_y_fraction_ <= 0.0 || sky_region_max_y_fraction_ > 1.0) {
+      throw std::runtime_error("sky_region_max_y_fraction must be in (0, 1]");
+    }
+
+    if (sky_blue_h_min_ < 0 || sky_blue_h_max_ > 179 || sky_blue_h_min_ > sky_blue_h_max_) {
+      throw std::runtime_error("sky blue hue range must satisfy 0 <= sky_blue_h_min <= sky_blue_h_max <= 179");
+    }
+
+    if (sky_blue_s_min_ < 0 || sky_blue_s_min_ > 255 || sky_blue_v_min_ < 0 || sky_blue_v_min_ > 255 ||
+      sky_cloud_s_max_ < 0 || sky_cloud_s_max_ > 255 || sky_cloud_v_min_ < 0 || sky_cloud_v_min_ > 255)
+    {
+      throw std::runtime_error("sky HSV thresholds must be in [0, 255]");
+    }
+  }
+
+  bool is_sky_pixel(const cv::Vec3b & hsv_pixel, const int v, const int image_rows) const
+  {
+    if (!sky_filter_enabled_) {
+      return false;
+    }
+
+    const int upper_region_limit =
+      static_cast<int>(std::ceil(sky_region_max_y_fraction_ * static_cast<double>(image_rows)));
+    const bool in_sky_region = sky_region_invert_y_
+      ? (v >= (image_rows - upper_region_limit))
+      : (v < upper_region_limit);
+    if (!in_sky_region) {
+      return false;
+    }
+
+    const int h = static_cast<int>(hsv_pixel[0]);
+    const int s = static_cast<int>(hsv_pixel[1]);
+    const int val = static_cast<int>(hsv_pixel[2]);
+
+    const bool blue_sky =
+      h >= sky_blue_h_min_ && h <= sky_blue_h_max_ && s >= sky_blue_s_min_ && val >= sky_blue_v_min_;
+    const bool bright_cloud = s <= sky_cloud_s_max_ && val >= sky_cloud_v_min_;
+    return blue_sky || bright_cloud;
   }
 
   void initialize_transform()
@@ -176,6 +225,11 @@ private:
       return;
     }
 
+    cv::Mat hsv_image;
+    if (sky_filter_enabled_) {
+      cv::cvtColor(cv_image, hsv_image, cv::COLOR_BGR2HSV);
+    }
+
     Eigen::Matrix4f t_lidar_camera = Eigen::Matrix4f::Identity();
     if (!get_lidar_to_camera_transform(rclcpp::Time(cloud_msg->header.stamp), t_lidar_camera)) {
       return;
@@ -187,9 +241,13 @@ private:
     std::vector<cv::Point3f> camera_points;
     std::vector<pcl::PointXYZ> candidate_points;
     std::vector<std::size_t> projected_indices;
+    std::vector<bool> remove_mask;
     camera_points.reserve(cloud_in->points.size());
     candidate_points.reserve(cloud_in->points.size());
     projected_indices.reserve(cloud_in->points.size());
+    if (!publish_only_colored_points_) {
+      remove_mask.resize(cloud_in->points.size(), false);
+    }
 
     for (const auto & point : cloud_in->points) {
       if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
@@ -242,6 +300,13 @@ private:
         }
 
         const cv::Vec3b & color = cv_image.at<cv::Vec3b>(v, u);
+        if (sky_filter_enabled_ && is_sky_pixel(hsv_image.at<cv::Vec3b>(v, u), v, cv_image.rows)) {
+          if (!publish_only_colored_points_) {
+            remove_mask[projected_indices[i]] = true;
+          }
+          continue;
+        }
+
         if (publish_only_colored_points_) {
           pcl::PointXYZRGB color_point;
           color_point.x = candidate_points[i].x;
@@ -258,6 +323,17 @@ private:
           color_point.r = color[2];
         }
       }
+    }
+
+    if (!publish_only_colored_points_ && !remove_mask.empty()) {
+      auto compacted_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZRGB>>();
+      compacted_cloud->points.reserve(cloud_out->points.size());
+      for (std::size_t i = 0; i < cloud_out->points.size(); ++i) {
+        if (!remove_mask[i]) {
+          compacted_cloud->points.push_back(cloud_out->points[i]);
+        }
+      }
+      cloud_out = compacted_cloud;
     }
 
     cloud_out->width = cloud_out->points.size();
@@ -305,6 +381,16 @@ private:
   int sync_queue_size_ = 10;
   bool publish_only_colored_points_ = true;
   bool camera_info_received_ = false;
+
+  bool sky_filter_enabled_ = true;
+  double sky_region_max_y_fraction_ = 0.5;
+  bool sky_region_invert_y_ = false;
+  int sky_blue_h_min_ = 90;
+  int sky_blue_h_max_ = 130;
+  int sky_blue_s_min_ = 25;
+  int sky_blue_v_min_ = 135;
+  int sky_cloud_s_max_ = 40;
+  int sky_cloud_v_min_ = 155;
 
   Eigen::Matrix4f camera_to_lidar_transform_ = Eigen::Matrix4f::Identity();
   Eigen::Matrix4f lidar_to_camera_transform_ = Eigen::Matrix4f::Identity();

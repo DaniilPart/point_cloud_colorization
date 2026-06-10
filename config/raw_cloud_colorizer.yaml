@@ -1,8 +1,9 @@
 raw_cloud_colorizer:
   ros__parameters:
     input_cloud_topic: /liorf/mapping/keyframes/cloud_deskewed_downsampled
-    input_image_topic: /camera_front/image_raw/compressed
+    # If input_image_topic_compressed is empty, it is derived automatically as input_image_topic_raw + "/compressed".
     input_image_topic_raw: /camera_front/image_raw
+    input_image_topic_compressed: ""
     camera_info_topic: /camera_front/camera_info
     output_cloud_topic: /colorizer/raw/colored_cloud
     debug_image_topic: /colorizer/raw/debug_overlay
@@ -21,6 +22,7 @@ raw_cloud_colorizer:
     lidar_frame_id: os1/os_lidar
     transform_lookup_timeout_sec: 0.1
     sync_queue_size: 10
+    min_processing_interval_sec: 0.0
 
     camera_to_lidar_matrix: [
       0.019, 0.0, -1.0, -0.058,

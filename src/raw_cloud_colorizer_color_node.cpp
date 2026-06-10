@@ -62,19 +62,13 @@ public:
     input_cloud_topic_ = this->declare_parameter<std::string>("input_cloud_topic", "");
     fixed_sync_image_stream_ = this->declare_parameter<std::string>(
       "fixed_sync_image_stream", "compressed");
-    input_compressed_image_topic_ = this->declare_parameter<std::string>("input_image_topic", "");
+    input_compressed_image_topic_ = this->declare_parameter<std::string>("input_image_topic_compressed", "");
     input_uncompressed_image_topic_ = this->declare_parameter<std::string>("input_image_topic_raw", "");
-    // Backward-compatible aliases.
-    const auto legacy_input_compressed_image_topic = this->declare_parameter<std::string>(
-      "input_compressed_image_topic", "");
-    const auto legacy_input_uncompressed_image_topic = this->declare_parameter<std::string>(
-      "input_uncompressed_image_topic", "");
-    if (input_compressed_image_topic_.empty()) {
-      input_compressed_image_topic_ = legacy_input_compressed_image_topic;
+
+    if (input_compressed_image_topic_.empty() && !input_uncompressed_image_topic_.empty()) {
+      input_compressed_image_topic_ = input_uncompressed_image_topic_ + "/compressed";
     }
-    if (input_uncompressed_image_topic_.empty()) {
-      input_uncompressed_image_topic_ = legacy_input_uncompressed_image_topic;
-    }
+
     camera_info_topic_ = this->declare_parameter<std::string>("camera_info_topic", "");
     output_cloud_topic_ = this->declare_parameter<std::string>("output_cloud_topic", "");
     output_frame_id_ = this->declare_parameter<std::string>("output_frame_id", "");
@@ -104,6 +98,8 @@ public:
     transform_lookup_timeout_ = rclcpp::Duration::from_seconds(
       this->declare_parameter<double>("transform_lookup_timeout_sec", 0.1));
     sync_queue_size_ = std::max<int>(1, this->declare_parameter<int>("sync_queue_size", 10));
+    min_processing_interval_ = rclcpp::Duration::from_seconds(
+      this->declare_parameter<double>("min_processing_interval_sec", 2.0));
 
     sky_filter_enabled_ = this->declare_parameter<bool>("sky_filter_enabled", true);
     sky_region_max_y_fraction_ = this->declare_parameter<double>("sky_region_max_y_fraction", 0.5);
@@ -196,7 +192,7 @@ private:
   void validate_configuration() const
   {
     pointcloud_colorizer::require_non_empty(input_cloud_topic_, "input_cloud_topic");
-    pointcloud_colorizer::require_non_empty(input_compressed_image_topic_, "input_image_topic");
+    pointcloud_colorizer::require_non_empty(input_compressed_image_topic_, "input_image_topic_compressed");
     pointcloud_colorizer::require_non_empty(camera_info_topic_, "camera_info_topic");
     pointcloud_colorizer::require_non_empty(output_cloud_topic_, "output_cloud_topic");
 
@@ -229,6 +225,10 @@ private:
       sky_cloud_s_max_ < 0 || sky_cloud_s_max_ > 255 || sky_cloud_v_min_ < 0 || sky_cloud_v_min_ > 255)
     {
       throw std::runtime_error("sky HSV thresholds must be in [0, 255]");
+    }
+
+    if (min_processing_interval_.seconds() < 0.0) {
+      throw std::runtime_error("min_processing_interval_sec must be >= 0");
     }
   }
 
@@ -526,6 +526,22 @@ private:
       return;
     }
 
+    {
+      std::lock_guard<std::mutex> lock(processing_interval_mutex_);
+      const auto now = this->now();
+      if (has_last_processing_time_ && (now - last_processing_time_) < min_processing_interval_) {
+        RCLCPP_WARN_THROTTLE(
+          this->get_logger(),
+          *this->get_clock(),
+          5000,
+          "Skipping callback: min_processing_interval_sec=%.3f",
+          min_processing_interval_.seconds());
+        return;
+      }
+      last_processing_time_ = now;
+      has_last_processing_time_ = true;
+    }
+
     auto cloud_in = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     pcl::fromROSMsg(*cloud_msg, *cloud_in);
 
@@ -592,6 +608,7 @@ private:
   cv::Mat camera_matrix_;
   cv::Mat dist_coeffs_;
   std::mutex source_selector_mutex_;
+  std::mutex processing_interval_mutex_;
   std::unique_ptr<pointcloud_colorizer::RawCloudColorizerCore> colorizer_core_;
 
   std::string input_cloud_topic_;
@@ -610,7 +627,9 @@ private:
   TransformSource transform_source_ = TransformSource::Config;
   rclcpp::Duration transform_lookup_timeout_ = rclcpp::Duration::from_seconds(0.1);
   rclcpp::Duration source_selector_max_wait_ = rclcpp::Duration::from_seconds(0.5);
+  rclcpp::Duration min_processing_interval_ = rclcpp::Duration::from_seconds(2.0);
   rclcpp::Time source_selector_start_time_;
+  rclcpp::Time last_processing_time_;
 
   int sync_queue_size_ = 10;
   int source_selector_max_compressed_frames_ = 10;
@@ -621,6 +640,7 @@ private:
   bool pre_cleaning_filter_enabled_ = true;
   bool use_fixed_sync_ = true;
   bool camera_info_received_ = false;
+  bool has_last_processing_time_ = false;
   ImageSource selected_source_ = ImageSource::Unknown;
   std::string fixed_sync_image_stream_ = "compressed";
 

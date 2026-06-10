@@ -114,6 +114,15 @@ add_colorizer_standalone(
   src/core/voxel_map_builder.cpp
 )
 
+add_executable(mesh_color_reconstructor src/tools/mesh_color_reconstructor.cpp)
+target_include_directories(mesh_color_reconstructor PUBLIC
+  ${PCL_INCLUDE_DIRS}
+)
+target_compile_features(mesh_color_reconstructor PUBLIC cxx_std_17)
+target_link_libraries(mesh_color_reconstructor
+  ${PCL_LIBRARIES}
+)
+
 install(TARGETS
   RawCloudColorizerColorNode
   ColoredCloudMapAggregatorNode
@@ -122,6 +131,11 @@ install(TARGETS
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
+)
+
+install(TARGETS
+  mesh_color_reconstructor
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY

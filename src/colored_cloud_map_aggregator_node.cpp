@@ -8,6 +8,7 @@
 #include "pointcloud_colorizer/voxel_map_builder.hpp"
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "std_msgs/msg/header.hpp"
@@ -32,8 +33,8 @@ class ColoredCloudMapAggregatorNode : public rclcpp::Node
   using Sync = message_filters::Synchronizer<SyncPolicy>;
 
 public:
-  ColoredCloudMapAggregatorNode()
-  : Node("colored_cloud_map_aggregator")
+  explicit ColoredCloudMapAggregatorNode(const rclcpp::NodeOptions & options)
+  : Node("colored_cloud_map_aggregator", options)
   {
     input_colored_cloud_topic_ = this->declare_parameter<std::string>("input_colored_cloud_topic", "");
     input_odometry_topic_ = this->declare_parameter<std::string>("input_odometry_topic", "");
@@ -200,10 +201,4 @@ private:
   float color_hash_max_load_factor_ = 0.7f;
 };
 
-int main(int argc, char * argv[])
-{
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ColoredCloudMapAggregatorNode>());
-  rclcpp::shutdown();
-  return 0;
-}
+RCLCPP_COMPONENTS_REGISTER_NODE(ColoredCloudMapAggregatorNode)

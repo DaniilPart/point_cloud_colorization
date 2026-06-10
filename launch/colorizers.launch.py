@@ -5,7 +5,8 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch import LaunchDescription
-from launch_ros.actions import Node
+from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.descriptions import ComposableNode
 
 
 def generate_launch_description():
@@ -20,20 +21,27 @@ def generate_launch_description():
         description='Launch RViz along with colorizer nodes',
     )
 
-    raw_colorizer = Node(
+    raw_colorizer_component = ComposableNode(
         package='pointcloud_colorizer',
-        executable='raw_cloud_colorizer_color',
+        plugin='RawCloudColorizerColorNode',
         name='raw_cloud_colorizer',
-        output='screen',
         parameters=[color_params_file],
     )
 
-    raw_map_aggregator = Node(
+    raw_map_aggregator_component = ComposableNode(
         package='pointcloud_colorizer',
-        executable='raw_cloud_map_aggregator',
+        plugin='ColoredCloudMapAggregatorNode',
         name='colored_cloud_map_aggregator',
-        output='screen',
         parameters=[map_params_file],
+    )
+
+    container = ComposableNodeContainer(
+        name='colorizer_container',
+        namespace='',
+        package='rclcpp_components',
+        executable='component_container_mt',
+        composable_node_descriptions=[raw_colorizer_component, raw_map_aggregator_component],
+        output='screen',
     )
 
     rviz = Node(
@@ -45,4 +53,4 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
-    return LaunchDescription([rviz_arg, raw_colorizer, raw_map_aggregator, rviz])
+    return LaunchDescription([rviz_arg, container, rviz])

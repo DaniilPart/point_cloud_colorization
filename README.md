@@ -9,8 +9,7 @@ Current architecture uses a split pipeline:
 
 ## Executables
 
-- pointcloud_colorizer raw_cloud_colorizer_color
-- pointcloud_colorizer raw_cloud_map_aggregator
+- rclcpp_components component_container_mt (used by launch as the composite container)
 
 ## Default Launch
 
@@ -18,8 +17,8 @@ Main launch file:
 - launch/colorizers.launch.py
 
 What it starts:
-- node name raw_cloud_colorizer, executable raw_cloud_colorizer_color
-- node name colored_cloud_map_aggregator, executable raw_cloud_map_aggregator
+- component raw_cloud_colorizer (plugin RawCloudColorizerColorNode)
+- component colored_cloud_map_aggregator (plugin ColoredCloudMapAggregatorNode)
 - optional rviz2 controlled by launch arg rviz (default true)
 
 Examples:
@@ -56,21 +55,18 @@ From workspace root:
   colcon build --packages-select pointcloud_colorizer --symlink-install
   source install/setup.bash
 
-Check executables:
+Check package presence:
 
-  ros2 pkg executables pointcloud_colorizer
+  ros2 pkg list | grep pointcloud_colorizer
 
-## Run Nodes Directly
+## Components
 
-Color node:
+The two runtime nodes are loaded as components into one process container:
 
-  PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/raw_cloud_colorizer.yaml
-  ros2 run pointcloud_colorizer raw_cloud_colorizer_color --ros-args --params-file "$PARAMS_FILE"
+- RawCloudColorizerColorNode
+- ColoredCloudMapAggregatorNode
 
-Map aggregator node:
-
-  PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colored_cloud_map_aggregator.yaml
-  ros2 run pointcloud_colorizer raw_cloud_map_aggregator --ros-args --params-file "$PARAMS_FILE"
+Launch file colorizers.launch.py loads both components into a single component_container_mt.
 
 ## RViz
 

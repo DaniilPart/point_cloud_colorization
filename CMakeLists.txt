@@ -10,6 +10,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
@@ -20,8 +21,8 @@ find_package(message_filters REQUIRED)
 
 find_package(PCL REQUIRED)
 
-function(add_colorizer_executable target_name)
-  add_executable(${target_name} ${ARGN})
+function(add_colorizer_component target_name)
+  add_library(${target_name} SHARED ${ARGN})
 
   target_include_directories(${target_name} PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -34,6 +35,7 @@ function(add_colorizer_executable target_name)
 
   ament_target_dependencies(${target_name}
     rclcpp
+    rclcpp_components
     sensor_msgs
     std_msgs
     nav_msgs
@@ -49,20 +51,27 @@ function(add_colorizer_executable target_name)
     ${PCL_LIBRARIES}
     ${OpenCV_LIBRARIES}
   )
+
+  rclcpp_components_register_nodes(${target_name} ${target_name})
 endfunction()
 
-add_colorizer_executable(raw_cloud_colorizer_color src/raw_cloud_colorizer_color_node.cpp)
-add_colorizer_executable(
-  raw_cloud_map_aggregator
+add_colorizer_component(
+  RawCloudColorizerColorNode
+  src/raw_cloud_colorizer_color_node.cpp
+)
+add_colorizer_component(
+  ColoredCloudMapAggregatorNode
   src/colored_cloud_map_aggregator_node.cpp
   src/voxel_color_estimator.cpp
   src/voxel_map_builder.cpp
 )
 
 install(TARGETS
-  raw_cloud_colorizer_color
-  raw_cloud_map_aggregator
-  DESTINATION lib/${PROJECT_NAME}
+  RawCloudColorizerColorNode
+  ColoredCloudMapAggregatorNode
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
 
 install(DIRECTORY

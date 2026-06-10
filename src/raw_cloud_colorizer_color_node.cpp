@@ -7,6 +7,7 @@
 #include "pointcloud_colorizer/transform_utils.hpp"
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -37,8 +38,8 @@ class RawCloudColorizerColorNode : public rclcpp::Node
   using RawSync = message_filters::Synchronizer<RawSyncPolicy>;
 
 public:
-  RawCloudColorizerColorNode()
-  : Node("raw_cloud_colorizer")
+  explicit RawCloudColorizerColorNode(const rclcpp::NodeOptions & options)
+  : Node("raw_cloud_colorizer", options)
   {
     input_cloud_topic_ = this->declare_parameter<std::string>("input_cloud_topic", "");
     input_image_topic_ = this->declare_parameter<std::string>("input_image_topic", "");
@@ -309,10 +310,4 @@ private:
   Eigen::Matrix4f lidar_to_camera_transform_ = Eigen::Matrix4f::Identity();
 };
 
-int main(int argc, char * argv[])
-{
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<RawCloudColorizerColorNode>());
-  rclcpp::shutdown();
-  return 0;
-}
+RCLCPP_COMPONENTS_REGISTER_NODE(RawCloudColorizerColorNode)

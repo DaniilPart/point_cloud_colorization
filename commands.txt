@@ -8,7 +8,7 @@ colcon build --packages-select pointcloud_colorizer --symlink-install
 source ~/ros2_ws/install/setup.bash
 
 # 3) Verify package executables
-ros2 pkg executables pointcloud_colorizer
+ros2 pkg list | grep pointcloud_colorizer
 
 # 4) Launch the default split pipeline (+ RViz by default)
 ros2 launch pointcloud_colorizer colorizers.launch.py
@@ -16,21 +16,13 @@ ros2 launch pointcloud_colorizer colorizers.launch.py
 # 5) Launch without RViz
 ros2 launch pointcloud_colorizer colorizers.launch.py rviz:=false
 
-# 6) Run color node directly
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/raw_cloud_colorizer.yaml
-ros2 run pointcloud_colorizer raw_cloud_colorizer_color --ros-args --params-file "$PARAMS_FILE"
-
-# 7) Run map aggregator directly
-PARAMS_FILE=$(ros2 pkg prefix pointcloud_colorizer)/share/pointcloud_colorizer/config/colored_cloud_map_aggregator.yaml
-ros2 run pointcloud_colorizer raw_cloud_map_aggregator --ros-args --params-file "$PARAMS_FILE"
-
-# 8) Check output topics
+# 6) Check output topics
 ros2 topic info /colorizer/raw/colored_cloud
 ros2 topic hz /colorizer/raw/colored_cloud
 ros2 topic info /colorizer/raw/naive_map
 ros2 topic hz /colorizer/raw/naive_map
 
-# 9) Helpful runtime checks
+# 7) Helpful runtime checks
 ros2 node list
 ros2 node info /raw_cloud_colorizer
 ros2 node info /colored_cloud_map_aggregator

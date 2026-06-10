@@ -123,6 +123,15 @@ target_link_libraries(mesh_color_reconstructor
   ${PCL_LIBRARIES}
 )
 
+add_executable(surfel_generator src/tools/surfel_generator.cpp)
+target_include_directories(surfel_generator PUBLIC
+  ${PCL_INCLUDE_DIRS}
+)
+target_compile_features(surfel_generator PUBLIC cxx_std_17)
+target_link_libraries(surfel_generator
+  ${PCL_LIBRARIES}
+)
+
 install(TARGETS
   RawCloudColorizerColorNode
   ColoredCloudMapAggregatorNode
@@ -135,6 +144,7 @@ install(TARGETS
 
 install(TARGETS
   mesh_color_reconstructor
+  surfel_generator
   DESTINATION lib/${PROJECT_NAME}
 )
 

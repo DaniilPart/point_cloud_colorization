@@ -60,10 +60,25 @@ bool ColoredCloudMapAggregatorCore::update_from_synced_messages(
     return false;
   }
 
-  pcl::PointCloud<pcl::PointXYZRGB> transformed_cloud = colored_cloud;
-  transform_colored_cloud_in_place(transformed_cloud, t_odom_lidar);
+  return update_from_pose_and_cloud(
+    t_odom_lidar,
+    odometry.header,
+    colored_cloud,
+    map_frame_id,
+    error_message);
+}
 
-  std_msgs::msg::Header map_header = odometry.header;
+bool ColoredCloudMapAggregatorCore::update_from_pose_and_cloud(
+  const Eigen::Matrix4f & pose_transform,
+  const std_msgs::msg::Header & source_header,
+  const pcl::PointCloud<pcl::PointXYZRGB> & colored_cloud,
+  const std::string & map_frame_id,
+  std::string * /*error_message*/)
+{
+  pcl::PointCloud<pcl::PointXYZRGB> transformed_cloud = colored_cloud;
+  transform_colored_cloud_in_place(transformed_cloud, pose_transform);
+
+  std_msgs::msg::Header map_header = source_header;
   if (!map_frame_id.empty()) {
     map_header.frame_id = map_frame_id;
   }

@@ -31,6 +31,13 @@ public:
     const std::string & map_frame_id,
     std::string * error_message = nullptr);
 
+  bool update_from_pose_and_cloud(
+    const Eigen::Matrix4f & pose_transform,
+    const std_msgs::msg::Header & source_header,
+    const pcl::PointCloud<pcl::PointXYZRGB> & colored_cloud,
+    const std::string & map_frame_id,
+    std::string * error_message = nullptr);
+
   bool has_pending_publish() const;
 
   bool take_map_cloud(

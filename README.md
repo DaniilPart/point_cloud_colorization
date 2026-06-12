@@ -69,6 +69,15 @@ ros2 run tf2_ros tf2_echo --frame1 pylon_camera --frame2 os_lidar
 
 ### Aggregator config: `config/colored_cloud_map_aggregator.yaml`
 
+- `pose_source` selects pose provider:
+  - `odometry` (default): synchronized odometry + colored cloud.
+  - `csv_keyframes`: uses `keyframes_csv_path` and subscribes only to colored cloud.
+- `keyframes_csv_path` points to CSV with columns:
+  - `timestamp_sec,x_local,y_local,z_local,roll,pitch,yaw`
+- `csv_pose_match_tolerance_sec` controls nearest timestamp matching tolerance.
+  - No interpolation is used in this mode.
+- `csv_pose_frame_id` is used as fallback parent frame for TF and map headers when cloud frame is empty.
+
 - `map_save_interval_sec` controls periodic save interval (set `0.0` to disable periodic saving).
   - Do this if suspect the performance issues, although it should not
 - 

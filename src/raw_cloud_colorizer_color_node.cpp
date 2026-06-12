@@ -138,14 +138,7 @@ public:
     }
 
     output_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_cloud_topic_, 10);
-    republished_uncompressed_image_publisher_ =
-      this->create_publisher<sensor_msgs::msg::Image>(
-      kRepublishedRawTopic,
-      rclcpp::SensorDataQoS());
-    republished_compressed_image_publisher_ =
-      this->create_publisher<sensor_msgs::msg::CompressedImage>(
-      kRepublishedCompressedTopic,
-      rclcpp::SensorDataQoS());
+    
     republished_cloud_publisher_ =
       this->create_publisher<sensor_msgs::msg::PointCloud2>(
       kRepublishedCloudTopic,
@@ -333,6 +326,14 @@ private:
     compressed_image_sub_.unsubscribe();
     uncompressed_image_sub_.unsubscribe();
 
+    if (!republished_compressed_image_publisher_) {
+      republished_compressed_image_publisher_ =
+        this->create_publisher<sensor_msgs::msg::CompressedImage>(
+        kRepublishedCompressedTopic,
+        rclcpp::SensorDataQoS());
+    }
+    republished_uncompressed_image_publisher_.reset();
+
     cloud_sub_.subscribe(this, input_cloud_topic_, sensor_qos);
     compressed_image_sub_.subscribe(this, input_compressed_image_topic_, sensor_qos);
     compressed_sync_ = std::make_shared<CompressedSync>(
@@ -350,6 +351,14 @@ private:
     cloud_sub_.unsubscribe();
     compressed_image_sub_.unsubscribe();
     uncompressed_image_sub_.unsubscribe();
+
+    if (!republished_uncompressed_image_publisher_) {
+      republished_uncompressed_image_publisher_ =
+        this->create_publisher<sensor_msgs::msg::Image>(
+        kRepublishedRawTopic,
+        rclcpp::SensorDataQoS());
+    }
+    republished_compressed_image_publisher_.reset();
 
     cloud_sub_.subscribe(this, input_cloud_topic_, sensor_qos);
     uncompressed_image_sub_.subscribe(this, input_uncompressed_image_topic_, sensor_qos);

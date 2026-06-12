@@ -39,6 +39,11 @@ using pointcloud_colorizer::TransformSource;
 
 class RawCloudColorizerColorNode : public rclcpp::Node
 {
+  static constexpr const char * kRepublishedRawTopic = "/colorizer/raw/synced_image_raw";
+  static constexpr const char * kRepublishedCompressedTopic =
+    "/colorizer/raw/synced_image_compressed";
+  static constexpr const char * kRepublishedCloudTopic = "/colorizer/raw/synced_cloud";
+
   using CompressedSyncPolicy = message_filters::sync_policies::ApproximateTime<
     sensor_msgs::msg::PointCloud2,
     sensor_msgs::msg::CompressedImage>;
@@ -133,6 +138,18 @@ public:
     }
 
     output_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(output_cloud_topic_, 10);
+    republished_uncompressed_image_publisher_ =
+      this->create_publisher<sensor_msgs::msg::Image>(
+      kRepublishedRawTopic,
+      rclcpp::SensorDataQoS());
+    republished_compressed_image_publisher_ =
+      this->create_publisher<sensor_msgs::msg::CompressedImage>(
+      kRepublishedCompressedTopic,
+      rclcpp::SensorDataQoS());
+    republished_cloud_publisher_ =
+      this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      kRepublishedCloudTopic,
+      rclcpp::SensorDataQoS());
     
     debug_image_publisher_ = this->create_publisher<sensor_msgs::msg::Image>(
       debug_image_topic_,
@@ -171,6 +188,13 @@ public:
       this->get_logger(),
       "Pre-cleaning filter is %s",
       pre_cleaning_filter_enabled_ ? "enabled" : "disabled");
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Republish topics: raw_image=%s compressed_image=%s synced_cloud=%s",
+      kRepublishedRawTopic,
+      kRepublishedCompressedTopic,
+      kRepublishedCloudTopic);
 
     if (debug_image_topic_.empty()) {
       RCLCPP_INFO(this->get_logger(), "Debug image publisher disabled (debug_image_topic is empty)");
@@ -486,6 +510,9 @@ private:
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg,
     const sensor_msgs::msg::CompressedImage::ConstSharedPtr img_msg)
   {
+    publish_republished_synced_cloud(*cloud_msg);
+    publish_republished_synced_image(*img_msg);
+
     cv::Mat cv_image;
     try {
       cv_image = cv_bridge::toCvCopy(img_msg, "bgr8")->image;
@@ -501,6 +528,9 @@ private:
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg,
     const sensor_msgs::msg::Image::ConstSharedPtr img_msg)
   {
+    publish_republished_synced_cloud(*cloud_msg);
+    publish_republished_synced_image(*img_msg);
+
     cv::Mat cv_image;
     try {
       cv_image = cv_bridge::toCvCopy(img_msg, "bgr8")->image;
@@ -587,6 +617,51 @@ private:
     }
   }
 
+  void publish_republished_synced_image(const sensor_msgs::msg::CompressedImage & msg)
+  {
+    if (!republished_compressed_image_publisher_) {
+      return;
+    }
+
+    if (republished_compressed_image_publisher_->get_subscription_count() == 0 &&
+      republished_compressed_image_publisher_->get_intra_process_subscription_count() == 0)
+    {
+      return;
+    }
+
+    republished_compressed_image_publisher_->publish(msg);
+  }
+
+  void publish_republished_synced_image(const sensor_msgs::msg::Image & msg)
+  {
+    if (!republished_uncompressed_image_publisher_) {
+      return;
+    }
+
+    if (republished_uncompressed_image_publisher_->get_subscription_count() == 0 &&
+      republished_uncompressed_image_publisher_->get_intra_process_subscription_count() == 0)
+    {
+      return;
+    }
+
+    republished_uncompressed_image_publisher_->publish(msg);
+  }
+
+  void publish_republished_synced_cloud(const sensor_msgs::msg::PointCloud2 & msg)
+  {
+    if (!republished_cloud_publisher_) {
+      return;
+    }
+
+    if (republished_cloud_publisher_->get_subscription_count() == 0 &&
+      republished_cloud_publisher_->get_intra_process_subscription_count() == 0)
+    {
+      return;
+    }
+
+    republished_cloud_publisher_->publish(msg);
+  }
+
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> cloud_sub_;
   message_filters::Subscriber<sensor_msgs::msg::CompressedImage> compressed_image_sub_;
   message_filters::Subscriber<sensor_msgs::msg::Image> uncompressed_image_sub_;
@@ -600,6 +675,9 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr output_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr republished_uncompressed_image_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr republished_compressed_image_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr republished_cloud_publisher_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

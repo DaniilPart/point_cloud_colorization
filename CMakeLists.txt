@@ -140,11 +140,14 @@ target_link_libraries(surfel_generator
 install(TARGETS
   RawCloudColorizerColorNode
   ColoredCloudMapAggregatorNode
-  raw_cloud_colorizer_color
-  raw_cloud_map_aggregator
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
-  RUNTIME DESTINATION bin
+)
+
+install(TARGETS
+  raw_cloud_colorizer_color
+  raw_cloud_map_aggregator
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(TARGETS

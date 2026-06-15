@@ -44,6 +44,9 @@ struct RawCloudColorizerProcessInput
   Eigen::Matrix4f lidar_to_camera_transform = Eigen::Matrix4f::Identity();
   cv::Mat camera_matrix;
   cv::Mat dist_coeffs;
+  bool enable_point_selection = false;
+  double selected_pixel_x = 0.0;
+  double selected_pixel_y = 0.0;
 };
 
 struct RawCloudColorizerProcessOutput
@@ -51,6 +54,10 @@ struct RawCloudColorizerProcessOutput
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud;
   cv::Mat debug_overlay;
   bool has_debug_overlay = false;
+  bool has_selected_point = false;
+  pcl::PointXYZ selected_point_lidar;
+  cv::Point2f selected_projected_pixel;
+  double selected_pixel_distance = 0.0;
 };
 
 class RawCloudColorizerCore

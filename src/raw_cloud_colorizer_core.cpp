@@ -78,11 +78,11 @@ RawCloudColorizerProcessOutput RawCloudColorizerCore::process(
   const int img_rows = input.bgr_image.rows;
 
   std::vector<cv::Point3f> camera_points;
-  std::vector<pcl::PointXYZ> candidate_points;
+  std::vector<pcl::PointXYZ> projected_lidar_points;
   std::vector<std::size_t> projected_indices;
   std::vector<bool> remove_mask;
   camera_points.reserve(input.cloud->points.size());
-  candidate_points.reserve(input.cloud->points.size());
+  projected_lidar_points.reserve(input.cloud->points.size());
   projected_indices.reserve(input.cloud->points.size());
   if (!config_.publish_only_colored_points) {
     remove_mask.resize(input.cloud->points.size(), false);
@@ -129,12 +129,17 @@ RawCloudColorizerProcessOutput RawCloudColorizerCore::process(
     }
 
     camera_points.emplace_back(pt_camera.x(), pt_camera.y(), pt_camera.z());
+    projected_lidar_points.push_back(point);
     if (config_.publish_only_colored_points) {
-      candidate_points.push_back(point);
+      continue;
     } else {
       projected_indices.push_back(output_index);
     }
   }
+
+  double best_selected_distance_sq = std::numeric_limits<double>::max();
+  std::size_t best_selected_index = 0;
+  cv::Point2f best_selected_projected_pixel;
 
   if (!camera_points.empty()) {
     std::vector<cv::Point2f> image_points;
@@ -152,6 +157,17 @@ RawCloudColorizerProcessOutput RawCloudColorizerCore::process(
 
       if (u < 0 || u >= input.bgr_image.cols || v < 0 || v >= input.bgr_image.rows) {
         continue;
+      }
+
+      if (input.enable_point_selection) {
+        const double du = static_cast<double>(u) - input.selected_pixel_x;
+        const double dv = static_cast<double>(v) - input.selected_pixel_y;
+        const double distance_sq = du * du + dv * dv;
+        if (distance_sq < best_selected_distance_sq) {
+          best_selected_distance_sq = distance_sq;
+          best_selected_index = i;
+          best_selected_projected_pixel = cv::Point2f(static_cast<float>(u), static_cast<float>(v));
+        }
       }
 
       const cv::Point pixel(u, v);
@@ -185,9 +201,9 @@ RawCloudColorizerProcessOutput RawCloudColorizerCore::process(
 
       if (config_.publish_only_colored_points) {
         pcl::PointXYZRGB color_point;
-        color_point.x = candidate_points[i].x;
-        color_point.y = candidate_points[i].y;
-        color_point.z = candidate_points[i].z;
+        color_point.x = projected_lidar_points[i].x;
+        color_point.y = projected_lidar_points[i].y;
+        color_point.z = projected_lidar_points[i].z;
         color_point.b = color[0];
         color_point.g = color[1];
         color_point.r = color[2];
@@ -238,6 +254,13 @@ RawCloudColorizerProcessOutput RawCloudColorizerCore::process(
   output.has_debug_overlay = generate_debug_overlay;
   if (generate_debug_overlay) {
     output.debug_overlay = std::move(debug_overlay);
+  }
+
+  if (input.enable_point_selection && best_selected_distance_sq < std::numeric_limits<double>::max()) {
+    output.has_selected_point = true;
+    output.selected_point_lidar = projected_lidar_points[best_selected_index];
+    output.selected_projected_pixel = best_selected_projected_pixel;
+    output.selected_pixel_distance = std::sqrt(best_selected_distance_sq);
   }
 
   return output;

@@ -16,6 +16,8 @@
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "std_msgs/msg/header.hpp"
+#include "geometry_msgs/msg/point.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 
 #include <Eigen/Dense>
@@ -83,6 +85,12 @@ public:
     pre_cleaning_filter_enabled_ = this->declare_parameter<bool>("pre_cleaning_filter_enabled", true);
     debug_image_topic_ = this->declare_parameter<std::string>(
       "debug_image_topic", "/colorizer/raw/debug_overlay");
+    click_input_topic_ = this->declare_parameter<std::string>(
+      "click_input_topic", "/colorizer/raw/debug_overlay_mouse_left");
+    selected_point_topic_ = this->declare_parameter<std::string>(
+      "selected_point_topic", "/colorizer/raw/selected_lidar_point");
+    selected_point_debug_image_topic_ = this->declare_parameter<std::string>(
+      "selected_point_debug_image_topic", "/colorizer/raw/debug_selected_point");
     debug_overlay_point_radius_ = std::max<int>(1, this->declare_parameter<int>("debug_overlay_point_radius", 2));
     use_fixed_sync_ = this->declare_parameter<bool>("use_fixed_sync", true);
     // Backward-compatible alias.
@@ -149,6 +157,19 @@ public:
       debug_image_topic_,
       rclcpp::SensorDataQoS());
 
+    selected_point_publisher_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
+      selected_point_topic_,
+      10);
+
+    selected_point_debug_image_publisher_ = this->create_publisher<sensor_msgs::msg::Image>(
+      selected_point_debug_image_topic_,
+      rclcpp::SensorDataQoS());
+
+    click_point_sub_ = this->create_subscription<geometry_msgs::msg::Point>(
+      click_input_topic_,
+      rclcpp::SensorDataQoS(),
+      std::bind(&RawCloudColorizerColorNode::click_point_callback, this, std::placeholders::_1));
+
     camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
       camera_info_topic_,
       rclcpp::SensorDataQoS(),
@@ -196,6 +217,13 @@ public:
       RCLCPP_INFO(this->get_logger(), "Debug image topic: %s", debug_image_topic_.c_str());
     }
 
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Click input topic: %s | selected point topic: %s | selected debug image topic: %s",
+      click_input_topic_.c_str(),
+      selected_point_topic_.c_str(),
+      selected_point_debug_image_topic_.c_str());
+
     if (publish_colorized_identity_tf_) {
       RCLCPP_INFO(
         this->get_logger(),
@@ -220,6 +248,9 @@ private:
     pointcloud_colorizer::require_non_empty(input_compressed_image_topic_, "input_image_topic_compressed");
     pointcloud_colorizer::require_non_empty(camera_info_topic_, "camera_info_topic");
     pointcloud_colorizer::require_non_empty(output_cloud_topic_, "output_cloud_topic");
+    pointcloud_colorizer::require_non_empty(click_input_topic_, "click_input_topic");
+    pointcloud_colorizer::require_non_empty(selected_point_topic_, "selected_point_topic");
+    pointcloud_colorizer::require_non_empty(selected_point_debug_image_topic_, "selected_point_debug_image_topic");
 
     if (!use_fixed_sync_) {
       pointcloud_colorizer::require_non_empty(input_uncompressed_image_topic_, "input_image_topic_raw");
@@ -531,6 +562,14 @@ private:
     RCLCPP_INFO(this->get_logger(), "Camera calibration parameters received.");
   }
 
+  void click_point_callback(const geometry_msgs::msg::Point::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock(pending_click_mutex_);
+    pending_click_x_ = msg->x;
+    pending_click_y_ = msg->y;
+    has_pending_click_ = true;
+  }
+
   bool get_lidar_to_camera_transform(
     const rclcpp::Time & stamp,
     const std::string & image_frame_id,
@@ -673,12 +712,32 @@ private:
       (debug_image_publisher_->get_subscription_count() > 0 ||
       debug_image_publisher_->get_intra_process_subscription_count() > 0);
 
+    bool has_pending_click = false;
+    double click_x = 0.0;
+    double click_y = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(pending_click_mutex_);
+      if (has_pending_click_) {
+        has_pending_click = true;
+        click_x = pending_click_x_;
+        click_y = pending_click_y_;
+        has_pending_click_ = false;
+      }
+    }
+
+    const bool publish_selected_debug_image = selected_point_debug_image_publisher_ && has_pending_click &&
+      (selected_point_debug_image_publisher_->get_subscription_count() > 0 ||
+      selected_point_debug_image_publisher_->get_intra_process_subscription_count() > 0);
+
     pointcloud_colorizer::RawCloudColorizerProcessInput process_input;
     process_input.cloud = cloud_in;
     process_input.bgr_image = cv_image;
     process_input.lidar_to_camera_transform = t_lidar_camera;
     process_input.camera_matrix = camera_matrix_;
     process_input.dist_coeffs = dist_coeffs_;
+    process_input.enable_point_selection = has_pending_click;
+    process_input.selected_pixel_x = click_x;
+    process_input.selected_pixel_y = click_y;
 
     pointcloud_colorizer::RawCloudColorizerProcessOutput process_output;
     try {
@@ -699,10 +758,48 @@ private:
 
     output_publisher_->publish(output_msg);
 
+    if (has_pending_click && process_output.has_selected_point && selected_point_publisher_) {
+      geometry_msgs::msg::PointStamped selected_point_msg;
+      selected_point_msg.header = cloud_msg->header;
+      selected_point_msg.point.x = process_output.selected_point_lidar.x;
+      selected_point_msg.point.y = process_output.selected_point_lidar.y;
+      selected_point_msg.point.z = process_output.selected_point_lidar.z;
+      selected_point_publisher_->publish(selected_point_msg);
+    }
+
     if (publish_debug_overlay && process_output.has_debug_overlay) {
       sensor_msgs::msg::Image::SharedPtr debug_msg =
         cv_bridge::CvImage(image_header, "bgr8", process_output.debug_overlay).toImageMsg();
       debug_image_publisher_->publish(*debug_msg);
+    }
+
+    if (publish_selected_debug_image) {
+      cv::Mat selected_debug = process_output.has_debug_overlay ?
+        process_output.debug_overlay.clone() : cv_image.clone();
+
+      cv::circle(
+        selected_debug,
+        cv::Point(cvRound(click_x), cvRound(click_y)),
+        std::max(3, debug_overlay_point_radius_ + 1),
+        cv::Scalar(255.0, 0.0, 0.0),
+        2,
+        cv::LINE_AA);
+
+      if (process_output.has_selected_point) {
+        cv::circle(
+          selected_debug,
+          cv::Point(
+            cvRound(process_output.selected_projected_pixel.x),
+            cvRound(process_output.selected_projected_pixel.y)),
+          std::max(3, debug_overlay_point_radius_ + 1),
+          cv::Scalar(0.0, 0.0, 255.0),
+          cv::FILLED,
+          cv::LINE_AA);
+      }
+
+      sensor_msgs::msg::Image::SharedPtr selected_debug_msg =
+        cv_bridge::CvImage(image_header, "bgr8", selected_debug).toImageMsg();
+      selected_point_debug_image_publisher_->publish(*selected_debug_msg);
     }
   }
 
@@ -759,11 +856,14 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_detection_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr uncompressed_detection_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr click_point_sub_;
   rclcpp::TimerBase::SharedPtr selector_timer_;
 
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr output_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr selected_point_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr selected_point_debug_image_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr republished_uncompressed_image_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr republished_compressed_image_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr republished_cloud_publisher_;
@@ -776,6 +876,7 @@ private:
   cv::Mat dist_coeffs_;
   std::mutex source_selector_mutex_;
   std::mutex processing_interval_mutex_;
+  std::mutex pending_click_mutex_;
   std::unique_ptr<pointcloud_colorizer::RawCloudColorizerCore> colorizer_core_;
 
   std::string input_cloud_topic_;
@@ -784,6 +885,9 @@ private:
   std::string camera_info_topic_;
   std::string output_cloud_topic_;  
   std::string debug_image_topic_;
+  std::string click_input_topic_;
+  std::string selected_point_topic_;
+  std::string selected_point_debug_image_topic_;
   std::string output_frame_id_;
   std::string colorized_frame_id_;
   std::string transform_source_string_;
@@ -810,10 +914,13 @@ private:
   bool camera_info_received_ = false;
   bool has_last_processing_time_ = false;
   bool has_cached_lidar_to_camera_transform_ = false;
+  bool has_pending_click_ = false;
   ImageSource selected_source_ = ImageSource::Unknown;
   std::string fixed_sync_image_stream_ = "compressed";
   std::string cached_camera_frame_id_;
   std::string cached_lidar_frame_id_;
+  double pending_click_x_ = 0.0;
+  double pending_click_y_ = 0.0;
 
   bool sky_filter_enabled_ = true;
   double sky_region_max_y_fraction_ = 0.5;

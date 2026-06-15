@@ -18,8 +18,11 @@ raw_cloud_colorizer:
     source_selector_max_compressed_frames: 10
     source_selector_max_wait_sec: 0.5
     transform_source: config
-    camera_frame_id: pylon_camera
-    lidar_frame_id: os_lidar
+    # Applies only when transform_source is tf_tree.
+    # false: cache first successful TF and reuse it, true: lookup TF for each synchronized pair.
+    refresh_tf_each_sync_pair: false
+    camera_frame_id: ""
+    lidar_frame_id: ""
     transform_lookup_timeout_sec: 0.1
     sync_queue_size: 10
     min_processing_interval_sec: 0.0

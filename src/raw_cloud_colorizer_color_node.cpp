@@ -102,6 +102,7 @@ public:
       "camera_to_lidar_matrix", std::vector<double>{});
     transform_lookup_timeout_ = rclcpp::Duration::from_seconds(
       this->declare_parameter<double>("transform_lookup_timeout_sec", 0.1));
+    refresh_tf_each_sync_pair_ = this->declare_parameter<bool>("refresh_tf_each_sync_pair", false);
     sync_queue_size_ = std::max<int>(1, this->declare_parameter<int>("sync_queue_size", 10));
     min_processing_interval_ = rclcpp::Duration::from_seconds(
       this->declare_parameter<double>("min_processing_interval_sec", 2.0));
@@ -203,6 +204,13 @@ public:
     } else {
       RCLCPP_INFO(this->get_logger(), "Identity TF publishing disabled");
     }
+
+    if (transform_source_ == TransformSource::TfTree) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "TF lookup mode (tf_tree): %s",
+        refresh_tf_each_sync_pair_ ? "per synchronized pair" : "cache once and reuse");
+    }
   }
 
 private:
@@ -222,8 +230,16 @@ private:
     }
 
     if (transform_source_ == TransformSource::TfTree) {
-      pointcloud_colorizer::require_non_empty(camera_frame_id_, "camera_frame_id");
-      pointcloud_colorizer::require_non_empty(lidar_frame_id_, "lidar_frame_id");
+      if (camera_frame_id_.empty()) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "camera_frame_id is empty; falling back to image header frame_id when available.");
+      }
+      if (lidar_frame_id_.empty()) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "lidar_frame_id is empty; falling back to cloud header frame_id when available.");
+      }
     }
 
     if (publish_colorized_identity_tf_) {
@@ -471,8 +487,32 @@ private:
       return;
     }
 
+    has_cached_lidar_to_camera_transform_ = false;
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  }
+
+  bool lookup_lidar_to_camera_transform_from_tf(
+    const rclcpp::Time & stamp,
+    const std::string & camera_frame,
+    const std::string & lidar_frame,
+    Eigen::Matrix4f & transform)
+  {
+    try {
+      const auto transform_msg = tf_buffer_->lookupTransform(
+        camera_frame,
+        lidar_frame,
+        stamp,
+        transform_lookup_timeout_);
+      transform = pointcloud_colorizer::matrix_from_transform_msg(transform_msg.transform);
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(this->get_logger(), "Could not lookup lidar->camera transform: %s", ex.what());
+      return false;
+    } catch (const std::runtime_error & ex) {
+      RCLCPP_WARN(this->get_logger(), "Invalid lidar->camera transform: %s", ex.what());
+      return false;
+    }
   }
 
   void camera_info_callback(const sensor_msgs::msg::CameraInfo::SharedPtr msg)
@@ -491,28 +531,63 @@ private:
     RCLCPP_INFO(this->get_logger(), "Camera calibration parameters received.");
   }
 
-  bool get_lidar_to_camera_transform(const rclcpp::Time & stamp, Eigen::Matrix4f & transform)
+  bool get_lidar_to_camera_transform(
+    const rclcpp::Time & stamp,
+    const std::string & image_frame_id,
+    const std::string & cloud_frame_id,
+    Eigen::Matrix4f & transform)
   {
     if (transform_source_ == TransformSource::Config) {
       transform = lidar_to_camera_transform_;
       return true;
     }
 
-    try {
-      const auto transform_msg = tf_buffer_->lookupTransform(
-        camera_frame_id_,
-        lidar_frame_id_,
-        stamp,
-        transform_lookup_timeout_);
-      transform = pointcloud_colorizer::matrix_from_transform_msg(transform_msg.transform);
-      return true;
-    } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN(this->get_logger(), "Could not lookup lidar->camera transform: %s", ex.what());
-      return false;
-    } catch (const std::runtime_error & ex) {
-      RCLCPP_WARN(this->get_logger(), "Invalid lidar->camera transform: %s", ex.what());
+    const std::string & resolved_camera_frame =
+      camera_frame_id_.empty() ? image_frame_id : camera_frame_id_;
+    const std::string & resolved_lidar_frame =
+      lidar_frame_id_.empty() ? cloud_frame_id : lidar_frame_id_;
+
+    if (resolved_camera_frame.empty() || resolved_lidar_frame.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        5000,
+        "Cannot lookup lidar->camera TF: camera frame is '%s', lidar frame is '%s'",
+        resolved_camera_frame.empty() ? "<empty>" : resolved_camera_frame.c_str(),
+        resolved_lidar_frame.empty() ? "<empty>" : resolved_lidar_frame.c_str());
       return false;
     }
+
+    if (refresh_tf_each_sync_pair_) {
+      return lookup_lidar_to_camera_transform_from_tf(
+        stamp,
+        resolved_camera_frame,
+        resolved_lidar_frame,
+        transform);
+    }
+
+    if (has_cached_lidar_to_camera_transform_ &&
+      cached_camera_frame_id_ == resolved_camera_frame &&
+      cached_lidar_frame_id_ == resolved_lidar_frame)
+    {
+      transform = cached_lidar_to_camera_transform_;
+      return true;
+    }
+
+    if (!lookup_lidar_to_camera_transform_from_tf(
+        stamp,
+        resolved_camera_frame,
+        resolved_lidar_frame,
+        cached_lidar_to_camera_transform_))
+    {
+      return false;
+    }
+
+    has_cached_lidar_to_camera_transform_ = true;
+    cached_camera_frame_id_ = resolved_camera_frame;
+    cached_lidar_frame_id_ = resolved_lidar_frame;
+    transform = cached_lidar_to_camera_transform_;
+    return true;
   }
 
   void compressed_topic_callback(
@@ -585,7 +660,12 @@ private:
     pcl::fromROSMsg(*cloud_msg, *cloud_in);
 
     Eigen::Matrix4f t_lidar_camera = Eigen::Matrix4f::Identity();
-    if (!get_lidar_to_camera_transform(rclcpp::Time(cloud_msg->header.stamp), t_lidar_camera)) {
+    if (!get_lidar_to_camera_transform(
+        rclcpp::Time(cloud_msg->header.stamp),
+        image_header.frame_id,
+        cloud_msg->header.frame_id,
+        t_lidar_camera))
+    {
       return;
     }
 
@@ -702,7 +782,7 @@ private:
   std::string input_compressed_image_topic_;
   std::string input_uncompressed_image_topic_;
   std::string camera_info_topic_;
-  std::string output_cloud_topic_;
+  std::string output_cloud_topic_;  
   std::string debug_image_topic_;
   std::string output_frame_id_;
   std::string colorized_frame_id_;
@@ -726,10 +806,14 @@ private:
   bool publish_only_colored_points_ = true;
   bool pre_cleaning_filter_enabled_ = true;
   bool use_fixed_sync_ = true;
+  bool refresh_tf_each_sync_pair_ = false;
   bool camera_info_received_ = false;
   bool has_last_processing_time_ = false;
+  bool has_cached_lidar_to_camera_transform_ = false;
   ImageSource selected_source_ = ImageSource::Unknown;
   std::string fixed_sync_image_stream_ = "compressed";
+  std::string cached_camera_frame_id_;
+  std::string cached_lidar_frame_id_;
 
   bool sky_filter_enabled_ = true;
   double sky_region_max_y_fraction_ = 0.5;
@@ -743,6 +827,7 @@ private:
 
   Eigen::Matrix4f camera_to_lidar_transform_ = Eigen::Matrix4f::Identity();
   Eigen::Matrix4f lidar_to_camera_transform_ = Eigen::Matrix4f::Identity();
+  Eigen::Matrix4f cached_lidar_to_camera_transform_ = Eigen::Matrix4f::Identity();
 };
 
 #ifndef POINTCLOUD_COLORIZER_BUILD_STANDALONE

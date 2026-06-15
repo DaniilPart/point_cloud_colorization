@@ -1,7 +1,13 @@
+/**:
+  ros__parameters:
+    input_odometry_topic: /liorf/mapping/odometry_incremental
+    map_save_interval_sec: 5.0
+    map_save_append_start_timestamp: true
+    map_save_ply_path: /media/spot/sarmo/elrob/colored_cloud_map.ply
+
 colored_cloud_map_aggregator:
   ros__parameters:
     input_colored_cloud_topic: /colorizer/raw/colored_cloud
-    input_odometry_topic: /liorf/mapping/odometry
     output_map_topic: /colorizer/raw/naive_map
     pose_source: odometry
     keyframes_csv_path: ""
@@ -10,12 +16,9 @@ colored_cloud_map_aggregator:
     map_frame_id: ""
     map_voxel_size: 0.3
     map_publish_interval_sec: 1.0
-    map_save_interval_sec: 5.0
-    map_save_append_start_timestamp: true
     map_save_service_name: ~/save_map
     publish_colorized_to_odom_colorized_tf: true
     odom_colorized_frame_id: odom_colorized
-    map_save_ply_path: /home/spot/colored_cloud_map.ply
     sync_queue_size: 10
     color_burnin_samples: 5
     color_step_max: 16
@@ -23,3 +26,8 @@ colored_cloud_map_aggregator:
     placeholder_gray_value: 128
     color_hash_initial_capacity: 262144
     color_hash_max_load_factor: 0.7
+
+odom_earth_pose_logger:
+  ros__parameters:
+    earth_frame_id: earth
+    tf_lookup_timeout_sec: 0.1

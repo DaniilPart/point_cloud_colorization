@@ -104,6 +104,10 @@ add_colorizer_component(
   src/core/voxel_color_estimator.cpp
   src/core/voxel_map_builder.cpp
 )
+add_colorizer_component(
+  OdomEarthPoseLoggerNode
+  src/nodes/odom_earth_pose_logger_node.cpp
+)
 
 add_colorizer_standalone(
   raw_cloud_colorizer_color
@@ -117,6 +121,10 @@ add_colorizer_standalone(
   src/core/csv_keyframe_pose_provider.cpp
   src/core/voxel_color_estimator.cpp
   src/core/voxel_map_builder.cpp
+)
+add_colorizer_standalone(
+  odom_earth_pose_logger
+  src/nodes/odom_earth_pose_logger_node.cpp
 )
 
 add_executable(mesh_color_reconstructor src/tools/mesh_color_reconstructor.cpp)
@@ -140,6 +148,7 @@ target_link_libraries(surfel_generator
 install(TARGETS
   RawCloudColorizerColorNode
   ColoredCloudMapAggregatorNode
+  OdomEarthPoseLoggerNode
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
 )
@@ -147,6 +156,7 @@ install(TARGETS
 install(TARGETS
   raw_cloud_colorizer_color
   raw_cloud_map_aggregator
+  odom_earth_pose_logger
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 

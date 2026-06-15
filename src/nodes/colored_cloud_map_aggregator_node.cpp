@@ -73,6 +73,7 @@ public:
     keyframes_csv_path_ = this->declare_parameter<std::string>("keyframes_csv_path", "");
     csv_pose_match_tolerance_sec_ = this->declare_parameter<double>("csv_pose_match_tolerance_sec", 0.05);
     csv_pose_frame_id_ = this->declare_parameter<std::string>("csv_pose_frame_id", "odom");
+    run_id_ = this->declare_parameter<std::string>("run_id", "");
 
     color_burnin_samples_ = this->declare_parameter<int>("color_burnin_samples", 5);
     color_step_max_ = this->declare_parameter<int>("color_step_max", 16);
@@ -91,7 +92,7 @@ public:
         keyframes_csv_path_, csv_pose_match_tolerance_sec_);
     }
 
-    experiment_start_timestamp_ = make_start_timestamp();
+    experiment_start_timestamp_ = run_id_.empty() ? make_start_timestamp() : run_id_;
     resolved_map_save_ply_path_ = resolve_map_save_path(
       map_save_ply_path_,
       map_save_append_start_timestamp_,
@@ -582,6 +583,7 @@ private:
   std::string keyframes_csv_path_;
   double csv_pose_match_tolerance_sec_ = 0.05;
   std::string csv_pose_frame_id_ = "odom";
+  std::string run_id_;
   std::unique_ptr<pointcloud_colorizer::CsvKeyframePoseProvider> csv_pose_provider_;
 
   float map_voxel_size_ = 0.3f;

@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import DeclareLaunchArgument
@@ -10,6 +11,9 @@ from launch_ros.descriptions import ComposableNode
 
 
 def generate_launch_description():
+    run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    shared_runtime_params = {'run_id': run_id}
+
     package_share = get_package_share_directory('pointcloud_colorizer')
     color_params_file = os.path.join(package_share, 'config', 'spot', 'raw_cloud_colorizer.yaml')
     map_params_file = os.path.join(package_share, 'config', 'spot', 'colored_cloud_map_aggregator.yaml')
@@ -32,7 +36,14 @@ def generate_launch_description():
         package='pointcloud_colorizer',
         plugin='ColoredCloudMapAggregatorNode',
         name='colored_cloud_map_aggregator',
-        parameters=[map_params_file],
+        parameters=[map_params_file, shared_runtime_params],
+    )
+
+    odom_earth_pose_logger_component = ComposableNode(
+        package='pointcloud_colorizer',
+        plugin='OdomEarthPoseLoggerNode',
+        name='odom_earth_pose_logger',
+        parameters=[map_params_file, shared_runtime_params],
     )
 
     container = ComposableNodeContainer(
@@ -40,7 +51,11 @@ def generate_launch_description():
         namespace='',
         package='rclcpp_components',
         executable='component_container_mt',
-        composable_node_descriptions=[raw_colorizer_component, raw_map_aggregator_component],
+        composable_node_descriptions=[
+            raw_colorizer_component,
+            raw_map_aggregator_component,
+            odom_earth_pose_logger_component,
+        ],
         output='screen',
     )
 

@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+
+usage() {
+  echo "Usage: $0 <input_map.ply>"
+  echo
+  echo "Runs the full map post-processing pipeline:"
+  echo "  1) surfel generation"
+  echo "  2) PLY -> LAS translation via PDAL"
+  echo "  3) Potree web viewer generation"
+  echo "  4) Zip archive for sharing"
+  echo
+  echo "All outputs are written to a sibling folder named '3dmap' next to the input file."
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -ne 1 ]]; then
+  usage
+  exit 2
+fi
+
+input_ply="$1"
+
+if [[ ! -f "$input_ply" ]]; then
+  echo "Error: input file does not exist: $input_ply" >&2
+  exit 2
+fi
+
+case "$input_ply" in
+  *.ply|*.PLY) ;;
+  *)
+    echo "Error: input must be a .ply file." >&2
+    exit 2
+    ;;
+esac
+
+if ! command -v ros2 >/dev/null 2>&1; then
+  echo "Error: ros2 command not found in PATH." >&2
+  exit 3
+fi
+
+if ! command -v pdal >/dev/null 2>&1; then
+  echo "Error: pdal command not found in PATH." >&2
+  exit 3
+fi
+
+if ! command -v zip >/dev/null 2>&1; then
+  echo "Error: zip command not found in PATH." >&2
+  exit 3
+fi
+
+resolve_potree_converter() {
+  if [[ -n "${POTREE_CONVERTER:-}" ]]; then
+    if [[ -x "$POTREE_CONVERTER" ]]; then
+      echo "$POTREE_CONVERTER"
+      return 0
+    fi
+    echo "Error: POTREE_CONVERTER is set but not executable: $POTREE_CONVERTER" >&2
+    return 1
+  fi
+
+  if command -v PotreeConverter >/dev/null 2>&1; then
+    command -v PotreeConverter
+    return 0
+  fi
+
+  local default_path="$HOME/potree_converter/PotreeConverter_linux_x64/PotreeConverter"
+  if [[ -x "$default_path" ]]; then
+    echo "$default_path"
+    return 0
+  fi
+
+  echo "Error: PotreeConverter not found." >&2
+  echo "Set POTREE_CONVERTER or install it at $default_path" >&2
+  return 1
+}
+
+potree_converter_bin="$(resolve_potree_converter)"
+
+input_abs="$(readlink -f "$input_ply")"
+input_dir="$(dirname "$input_abs")"
+input_name="$(basename "$input_abs")"
+input_stem="${input_name%.*}"
+
+output_dir="$input_dir/3dmap"
+surfel_ply="$output_dir/${input_stem}_surfels.ply"
+surfel_las="$output_dir/${input_stem}_surfels.las"
+potree_workspace="$output_dir/potree_workspace"
+zip_path="$output_dir/${input_stem}_3dmap.zip"
+
+mkdir -p "$output_dir"
+rm -rf "$potree_workspace"
+rm -f "$zip_path"
+
+echo "[1/4] Generating surfels"
+ros2 run pointcloud_colorizer surfel_generator "$input_abs" "$surfel_ply"
+
+echo "[2/4] Translating PLY to LAS"
+pdal translate "$surfel_ply" "$surfel_las"
+
+echo "[3/4] Generating Potree viewer"
+"$potree_converter_bin" "$surfel_las" -o "$potree_workspace" --generate-page index
+
+echo "[4/4] Creating zip archive"
+(
+  cd "$output_dir"
+  zip -rq "$zip_path" "$(basename "$potree_workspace")"
+)
+
+echo
+echo "Pipeline complete. Outputs:"
+echo "  - $surfel_ply"
+echo "  - $surfel_las"
+echo "  - $potree_workspace"
+echo "  - $zip_path"

@@ -158,6 +158,7 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/save_map
+  scripts/postprocess_map
   DESTINATION lib/${PROJECT_NAME}
 )
 

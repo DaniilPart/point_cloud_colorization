@@ -1,0 +1,45 @@
+raw_cloud_colorizer:
+  ros__parameters:
+    input_cloud_topic: /liorf/deskew/cloud_deskewed
+    # If input_image_topic_compressed is empty, it is derived automatically as input_image_topic_raw + "/compressed".
+    camera_info_topic: /camera/hand/camera_info
+    input_image_topic_raw: /camera/hand/image
+    input_image_topic_compressed: ""
+    output_cloud_topic: /colorizer/raw/colored_cloud
+    debug_image_topic: /colorizer/raw/debug_overlay
+    output_frame_id: ""
+    publish_colorized_identity_tf: true
+    colorized_frame_id: colorized_lidar_link
+    publish_only_colored_points: true
+    pre_cleaning_filter_enabled: true
+    debug_overlay_point_radius: 2
+    use_fixed_sync: false
+    fixed_sync_image_stream: compressed
+    source_selector_max_compressed_frames: 10
+    source_selector_max_wait_sec: 0.5
+    transform_source: tf_tree # config tf_tree
+    # Applies only when transform_source is tf_tree.
+    # false: cache first successful TF and reuse it, true: lookup TF for each synchronized pair.
+    refresh_tf_each_sync_pair: true
+    camera_frame_id: ""
+    lidar_frame_id: ""
+    transform_lookup_timeout_sec: 0.1
+    sync_queue_size: 10
+    min_processing_interval_sec: 1.0
+
+    camera_to_lidar_matrix: [
+      0.019, 0.0, -1.0, -0.058,
+      -1.0, 0.0, -0.019, -0.001,
+      0.0, 1.0, 0.0, -0.145,
+      0.0, 0.0, 0.0, 1.0
+    ]
+
+    sky_filter_enabled: false
+    sky_region_max_y_fraction: 0.5
+    sky_region_invert_y: true
+    sky_blue_h_min: 90
+    sky_blue_h_max: 130
+    sky_blue_s_min: 25
+    sky_blue_v_min: 135
+    sky_cloud_s_max: 40
+    sky_cloud_v_min: 155

@@ -1,9 +1,8 @@
 /**:
   ros__parameters:
-    input_odometry_topic: /liorf/mapping/odometry_incremental
+    input_odometry_topic: /liorf/mapping/odometry
     map_save_interval_sec: 5.0
-    map_save_append_start_timestamp: true
-    map_save_ply_path: ~/sarmo/elrob/colored_cloud_map.ply
+    output_dir: ~/sarmo/elrob
 
 colored_cloud_map_aggregator:
   ros__parameters:

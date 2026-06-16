@@ -5,6 +5,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+list(APPEND CMAKE_MODULE_PATH "/usr/share/cmake/geographiclib/")
+
 find_package(ament_cmake REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -19,6 +21,7 @@ find_package(tf2 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(GeographicLib REQUIRED)
 
 find_package(PCL REQUIRED)
 
@@ -108,6 +111,7 @@ add_colorizer_component(
   OdomEarthPoseLoggerNode
   src/nodes/odom_earth_pose_logger_node.cpp
 )
+target_link_libraries(OdomEarthPoseLoggerNode ${GeographicLib_LIBRARIES})
 
 add_colorizer_standalone(
   raw_cloud_colorizer_color
@@ -126,6 +130,7 @@ add_colorizer_standalone(
   odom_earth_pose_logger
   src/nodes/odom_earth_pose_logger_node.cpp
 )
+target_link_libraries(odom_earth_pose_logger ${GeographicLib_LIBRARIES})
 
 add_executable(mesh_color_reconstructor src/tools/mesh_color_reconstructor.cpp)
 target_include_directories(mesh_color_reconstructor PUBLIC

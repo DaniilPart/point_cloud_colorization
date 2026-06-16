@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
@@ -60,9 +61,7 @@ public:
     map_voxel_size_ = static_cast<float>(this->declare_parameter<double>("map_voxel_size", 0.3));
     map_publish_interval_sec_ = this->declare_parameter<double>("map_publish_interval_sec", 1.0);
     map_save_interval_sec_ = this->declare_parameter<double>("map_save_interval_sec", 5.0);
-    map_save_ply_path_ = this->declare_parameter<std::string>("map_save_ply_path", "");
-    map_save_append_start_timestamp_ = this->declare_parameter<bool>(
-      "map_save_append_start_timestamp", true);
+    output_dir_ = this->declare_parameter<std::string>("output_dir", "");
     map_save_service_name_ = this->declare_parameter<std::string>("map_save_service_name", "~/save_map");
     publish_colorized_to_odom_colorized_tf_ = this->declare_parameter<bool>(
       "publish_colorized_to_odom_colorized_tf", true);
@@ -93,10 +92,16 @@ public:
     }
 
     experiment_start_timestamp_ = run_id_.empty() ? make_start_timestamp() : run_id_;
-    resolved_map_save_ply_path_ = resolve_map_save_path(
-      map_save_ply_path_,
-      map_save_append_start_timestamp_,
-      experiment_start_timestamp_);
+    resolved_output_run_dir_ = resolve_run_output_directory(output_dir_, experiment_start_timestamp_);
+    resolved_map_save_ply_path_ = resolve_map_output_file_path(resolved_output_run_dir_);
+
+    std::error_code dir_ec;
+    std::filesystem::create_directories(resolved_output_run_dir_, dir_ec);
+    if (dir_ec) {
+      throw std::runtime_error(
+              "Failed to create output directory '" + resolved_output_run_dir_ + "': " +
+              dir_ec.message());
+    }
 
     pointcloud_colorizer::ColoredCloudMapAggregatorCoreConfig core_config;
     core_config.map_builder.estimator.voxel_size = map_voxel_size_;
@@ -150,7 +155,7 @@ public:
 
     RCLCPP_INFO(
       this->get_logger(),
-      "Colored cloud map aggregator: pose_source=%s colored_cloud=%s odometry=%s output_map=%s map_frame=%s map_voxel_size=%.3f map_publish_interval_sec=%.2f map_save_interval_sec=%.2f map_save_ply_path=%s sync_queue_size=%d",
+      "Colored cloud map aggregator: pose_source=%s colored_cloud=%s odometry=%s output_map=%s map_frame=%s map_voxel_size=%.3f map_publish_interval_sec=%.2f map_save_interval_sec=%.2f run_id=%s output_dir=%s map_file=%s sync_queue_size=%d",
       pose_source_name_.c_str(),
       input_colored_cloud_topic_.c_str(),
       input_odometry_topic_.c_str(),
@@ -159,6 +164,8 @@ public:
       map_voxel_size_,
       map_publish_interval_sec_,
       map_save_interval_sec_,
+      experiment_start_timestamp_.c_str(),
+      resolved_output_run_dir_.c_str(),
       resolved_map_save_ply_path_.c_str(),
       sync_queue_size_);
 
@@ -235,7 +242,7 @@ private:
       pointcloud_colorizer::require_non_empty(odom_colorized_frame_id_, "odom_colorized_frame_id");
     }
 
-    pointcloud_colorizer::require_non_empty(map_save_ply_path_, "map_save_ply_path");
+    pointcloud_colorizer::require_non_empty(output_dir_, "output_dir");
   }
 
   void sync_callback(
@@ -474,7 +481,7 @@ private:
       std::filesystem::create_directories(parent, ec);
       if (ec) {
         const std::string message =
-          "Failed to create directory for map_save_ply_path '" + parent.string() + "': " + ec.message();
+          "Failed to create output directory '" + parent.string() + "': " + ec.message();
         if (throttle_logs) {
           RCLCPP_WARN_THROTTLE(
             this->get_logger(),
@@ -539,26 +546,35 @@ private:
     return oss.str();
   }
 
-  static std::string resolve_map_save_path(
-    const std::string & configured_path,
-    bool append_start_timestamp,
-    const std::string & start_timestamp)
+  static std::string expand_user_path(const std::string & path)
   {
-    if (!append_start_timestamp) {
-      return configured_path;
+    if (path.empty() || path[0] != '~') {
+      return path;
     }
 
-    const std::filesystem::path path(configured_path);
-    const std::string stem = path.stem().string();
-    const std::string ext = path.extension().string();
-    const std::string effective_ext = ext.empty() ? ".ply" : ext;
-    const std::filesystem::path parent = path.parent_path();
+    if (path.size() > 1 && path[1] != '/') {
+      return path;
+    }
 
-    const std::filesystem::path filename = stem.empty() ?
-      std::filesystem::path(start_timestamp + effective_ext) :
-      std::filesystem::path(stem + "_" + start_timestamp + effective_ext);
+    const char * home = std::getenv("HOME");
+    if (home == nullptr || home[0] == '\0') {
+      return path;
+    }
 
-    return (parent / filename).string();
+    return std::string(home) + path.substr(1);
+  }
+
+  static std::string resolve_run_output_directory(
+    const std::string & output_dir,
+    const std::string & run_id)
+  {
+    const std::filesystem::path root(expand_user_path(output_dir));
+    return (root / run_id).string();
+  }
+
+  static std::string resolve_map_output_file_path(const std::string & run_output_dir)
+  {
+    return (std::filesystem::path(run_output_dir) / "colored_cloud_map.ply").string();
   }
 
   message_filters::Subscriber<nav_msgs::msg::Odometry> odometry_;
@@ -589,14 +605,14 @@ private:
   float map_voxel_size_ = 0.3f;
   double map_publish_interval_sec_ = 1.0;
   double map_save_interval_sec_ = 5.0;
-  std::string map_save_ply_path_;
-  bool map_save_append_start_timestamp_ = true;
+  std::string output_dir_;
   std::string map_save_service_name_;
   bool publish_colorized_to_odom_colorized_tf_ = true;
   std::string odom_colorized_frame_id_ = "odom_colorized";
   std::string latched_tf_parent_frame_id_;
   bool has_latched_tf_parent_frame_id_ = false;
   std::string experiment_start_timestamp_;
+  std::string resolved_output_run_dir_;
   std::string resolved_map_save_ply_path_;
   int sync_queue_size_ = 10;
 

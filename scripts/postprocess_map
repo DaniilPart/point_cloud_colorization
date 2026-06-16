@@ -4,7 +4,7 @@ set -euo pipefail
 
 
 usage() {
-  echo "Usage: $0 <input_map.ply>"
+  echo "Usage: $0 [run_dir_or_input_map.ply]"
   echo
   echo "Runs the full map post-processing pipeline:"
   echo "  1) surfel generation"
@@ -12,33 +12,156 @@ usage() {
   echo "  3) Potree web viewer generation"
   echo "  4) Zip archive for sharing"
   echo
-  echo "All outputs are written to a sibling folder named '3dmap' next to the input file."
+  echo "Input can be either:"
+  echo "  - a run directory containing colored_cloud_map.ply"
+  echo "  - a direct .ply map path"
+  echo "  - omitted (auto-select latest run map under \$POSTPROCESS_RUNS_ROOT)"
+  echo
+  echo "All outputs are written to a '3dmap' folder inside the run directory"
+  echo "(or next to the input .ply when a direct file path is provided)."
+  echo
+  echo "Environment:"
+  echo "  POSTPROCESS_RUNS_ROOT   Search root for auto-select mode (default: ~/sarmo/elrob)"
+  echo "  NTFY_ENABLE             1 to enable notifications, 0 to disable (default: 1)"
+  echo "  NTFY_SERVER             ntfy server URL (default: https://ntfy.sh)"
+  echo "  NTFY_TOPIC              ntfy topic (default: sarmo)"
+  echo "  NTFY_TOKEN              optional bearer token for authenticated ntfy servers"
 }
+
+NTFY_ENABLE="${NTFY_ENABLE:-1}"
+NTFY_SERVER="${NTFY_SERVER:-https://ntfy.sh}"
+NTFY_TOPIC="${NTFY_TOPIC:-sarmo}"
+NTFY_TOKEN="${NTFY_TOKEN:-}"
+
+notify_ntfy() {
+  local title="$1"
+  local priority="$2"
+  local tags="$3"
+  local body="$4"
+
+  if [[ "$NTFY_ENABLE" == "0" || "$NTFY_ENABLE" == "false" || "$NTFY_ENABLE" == "False" ]]; then
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local url="${NTFY_SERVER%/}/${NTFY_TOPIC}"
+  local -a curl_args
+  curl_args=(
+    -sS
+    -m 10
+    -X POST
+    -H "Title: $title"
+    -H "Priority: $priority"
+    -H "Tags: $tags"
+    -d "$body"
+    "$url"
+  )
+
+  if [[ -n "$NTFY_TOKEN" ]]; then
+    curl_args+=( -H "Authorization: Bearer $NTFY_TOKEN" )
+  fi
+
+  curl "${curl_args[@]}" >/dev/null 2>&1 || true
+}
+
+on_error_notify() {
+  local exit_code="$1"
+  notify_ntfy \
+    "Map postprocess failed" \
+    "high" \
+    "warning,rotating_light" \
+    "Input: ${input_abs:-unknown}\nOutput dir: ${output_dir:-unknown}\nExit code: ${exit_code}"
+}
+
+trap 'on_error_notify "$?"' ERR
 
 if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
   usage
   exit 0
 fi
 
-if [[ $# -ne 1 ]]; then
+if [[ $# -gt 1 ]]; then
   usage
   exit 2
 fi
 
-input_ply="$1"
+input_arg="${1:-}"
 
-if [[ ! -f "$input_ply" ]]; then
-  echo "Error: input file does not exist: $input_ply" >&2
-  exit 2
+expand_tilde() {
+  local p="$1"
+  if [[ "$p" == ~* ]]; then
+    echo "${p/#\~/$HOME}"
+    return 0
+  fi
+  echo "$p"
+}
+
+resolve_latest_run_map() {
+  local root="$1"
+
+  if [[ ! -d "$root" ]]; then
+    echo "Error: auto-select root does not exist: $root" >&2
+    return 1
+  fi
+
+  local latest
+  latest="$(
+    (find "$root" -mindepth 2 -maxdepth 2 -type f -name 'colored_cloud_map.ply' -printf '%T@ %p\n' 2>/dev/null || true) |
+    sort -n |
+    tail -n 1 |
+    cut -d' ' -f2-
+  )"
+
+  if [[ -z "$latest" ]]; then
+    echo "Error: no colored_cloud_map.ply found under: $root" >&2
+    return 1
+  fi
+
+  echo "$latest"
+}
+
+resolve_input_ply() {
+  local arg="$1"
+
+  if [[ -d "$arg" ]]; then
+    local candidate="$arg/colored_cloud_map.ply"
+    if [[ -f "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+
+    echo "Error: run directory does not contain colored_cloud_map.ply: $arg" >&2
+    return 1
+  fi
+
+  if [[ ! -f "$arg" ]]; then
+    echo "Error: input does not exist: $arg" >&2
+    return 1
+  fi
+
+  case "$arg" in
+    *.ply|*.PLY)
+      echo "$arg"
+      return 0
+      ;;
+    *)
+      echo "Error: input file must be a .ply file, or provide a run directory." >&2
+      return 1
+      ;;
+  esac
+}
+
+if [[ -z "$input_arg" ]]; then
+  runs_root="${POSTPROCESS_RUNS_ROOT:-~/sarmo/elrob}"
+  runs_root="$(expand_tilde "$runs_root")"
+  input_arg="$(resolve_latest_run_map "$runs_root")" || exit 2
+  echo "Auto-selected latest run map: $input_arg"
 fi
 
-case "$input_ply" in
-  *.ply|*.PLY) ;;
-  *)
-    echo "Error: input must be a .ply file." >&2
-    exit 2
-    ;;
-esac
+input_ply="$(resolve_input_ply "$input_arg")" || exit 2
 
 if ! command -v ros2 >/dev/null 2>&1; then
   echo "Error: ros2 command not found in PATH." >&2
@@ -98,6 +221,12 @@ mkdir -p "$output_dir"
 rm -rf "$potree_workspace"
 rm -f "$zip_path"
 
+notify_ntfy \
+  "Map postprocess started" \
+  "default" \
+  "hourglass_flowing_sand,triangular_flag_on_post" \
+  "Input: $input_abs\nOutput dir: $output_dir"
+
 echo "[1/4] Generating surfels"
 ros2 run pointcloud_colorizer surfel_generator "$input_abs" "$surfel_ply"
 
@@ -114,8 +243,15 @@ echo "[4/4] Creating zip archive"
 )
 
 echo
+echo "Input map: $input_abs"
 echo "Pipeline complete. Outputs:"
 echo "  - $surfel_ply"
 echo "  - $surfel_las"
 echo "  - $potree_workspace"
 echo "  - $zip_path"
+
+notify_ntfy \
+  "Map postprocess complete" \
+  "default" \
+  "white_check_mark,package" \
+  "Input: $input_abs\nSurfel PLY: $surfel_ply\nLAS: $surfel_las\nViewer: $potree_workspace\nZip: $zip_path"

@@ -568,6 +568,12 @@ private:
     pending_click_x_ = msg->x;
     pending_click_y_ = msg->y;
     has_pending_click_ = true;
+
+    // Force the next synchronized callback to run immediately after a click.
+    {
+      std::lock_guard<std::mutex> processing_lock(processing_interval_mutex_);
+      has_last_processing_time_ = false;
+    }
   }
 
   bool get_lidar_to_camera_transform(

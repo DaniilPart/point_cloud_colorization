@@ -92,6 +92,28 @@ This takes under 1 minute, but requires dependency installation. Follow the MAP_
 
 
 ## Running from the bagfile
+Record Spot reconstruction inputs (MCAP):
+```bash
+ros2 launch pointcloud_colorizer spot/spot_record_reconstruction_inputs.launch.py
+```
+
+This launch runs the full pipeline by default:
+- raw colorizer
+- colored cloud map aggregator
+- odom-earth pose logger
+- rosbag2 recorder
+
+Disable aggregation if you only want recording + colorizer:
+```bash
+ros2 launch pointcloud_colorizer spot/spot_record_reconstruction_inputs.launch.py enable_aggregation:=false
+```
+
+By default this records:
+- `/colorizer/raw/colored_cloud`
+- `/liorf/mapping/odometry_incremental`
+
+Topics are resolved from `config/spot/colored_cloud_map_aggregator.yaml`, and output is written to `~/bag/reconstruction_inputs_YYYYMMDD_HHMMSS`.
+
 Example bagfile playing:
 ```bash
 ros2 bag play recording_20260423_153545 --topics \

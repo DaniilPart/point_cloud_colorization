@@ -210,16 +210,28 @@ input_abs="$(readlink -f "$input_ply")"
 input_dir="$(dirname "$input_abs")"
 input_name="$(basename "$input_abs")"
 input_stem="${input_name%.*}"
+run_id="$(basename "$input_dir")"
 
 output_dir="$input_dir/3dmap"
 surfel_ply="$output_dir/${input_stem}_surfels.ply"
 surfel_las="$output_dir/${input_stem}_surfels.las"
-potree_workspace="$output_dir/potree_workspace"
-zip_path="$output_dir/${input_stem}_3dmap.zip"
+package_root_name="sarmo_${run_id}"
+maps_bundle_dir_name="maps_and_trajectories_${run_id}"
+viz_bundle_dir_name="visualization_sarmo_${run_id}"
+package_root_dir="$output_dir/$package_root_name"
+maps_bundle_dir="$package_root_dir/$maps_bundle_dir_name"
+viz_bundle_dir="$package_root_dir/$viz_bundle_dir_name"
+potree_workspace="$viz_bundle_dir"
+zip_path="$output_dir/${package_root_name}.zip"
+export_root_default="/media/${USER}/sarmo/elrob"
+export_root="${POSTPROCESS_EXPORT_ROOT:-$export_root_default}"
+export_zip_path="$export_root/$(basename "$zip_path")"
+zip_exported="false"
 
 mkdir -p "$output_dir"
-rm -rf "$potree_workspace"
+rm -rf "$package_root_dir"
 rm -f "$zip_path"
+mkdir -p "$maps_bundle_dir" "$viz_bundle_dir"
 
 notify_ntfy \
   "Map postprocess started" \
@@ -231,16 +243,52 @@ echo "[1/4] Generating surfels"
 ros2 run pointcloud_colorizer surfel_generator "$input_abs" "$surfel_ply"
 
 echo "[2/4] Translating PLY to LAS"
-pdal translate "$surfel_ply" "$surfel_las"
+pdal translate \
+  "$surfel_ply" \
+  "$surfel_las" \
+  --writers.las.scale_x=0.001 \
+  --writers.las.scale_y=0.001 \
+  --writers.las.scale_z=0.001 \
+  --writers.las.offset_x=auto \
+  --writers.las.offset_y=auto \
+  --writers.las.offset_z=auto
 
 echo "[3/4] Generating Potree viewer"
 "$potree_converter_bin" "$surfel_las" -o "$potree_workspace" --generate-page index
 
 echo "[4/4] Creating zip archive"
+cp -f "$input_abs" "$maps_bundle_dir/"
+cp -f "$surfel_ply" "$maps_bundle_dir/"
+cp -f "$surfel_las" "$maps_bundle_dir/"
+
+for trajectory_file in \
+  odometry.csv \
+  ecef.csv \
+  utm.csv \
+  odom_earth_pose_log.csv \
+  earth_to_odom_transform.yaml
+do
+  src_path="$input_dir/$trajectory_file"
+  if [[ -f "$src_path" ]]; then
+    cp -f "$src_path" "$maps_bundle_dir/"
+  fi
+done
+
 (
   cd "$output_dir"
-  zip -rq "$zip_path" "$(basename "$potree_workspace")"
+  zip -rq "$zip_path" "$package_root_name"
 )
+
+echo "[5/5] Exporting zip to removable media (best effort)"
+if [[ -d "$export_root" ]]; then
+  if cp -f "$zip_path" "$export_zip_path"; then
+    zip_exported="true"
+  else
+    echo "Warning: failed to copy zip to $export_root" >&2
+  fi
+else
+  echo "Info: export destination not found, skipping copy: $export_root"
+fi
 
 echo
 echo "Input map: $input_abs"
@@ -249,9 +297,12 @@ echo "  - $surfel_ply"
 echo "  - $surfel_las"
 echo "  - $potree_workspace"
 echo "  - $zip_path"
+if [[ "$zip_exported" == "true" ]]; then
+  echo "  - $export_zip_path"
+fi
 
 notify_ntfy \
   "Map postprocess complete" \
   "default" \
   "white_check_mark,package" \
-  "Input: $input_abs\nSurfel PLY: $surfel_ply\nLAS: $surfel_las\nViewer: $potree_workspace\nZip: $zip_path"
+  "Input: $input_abs\nSurfel PLY: $surfel_ply\nLAS: $surfel_las\nViewer: $potree_workspace\nZip: $zip_path\nExported zip: $zip_exported"

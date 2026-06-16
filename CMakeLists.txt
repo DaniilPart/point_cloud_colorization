@@ -180,6 +180,7 @@ install(PROGRAMS
 install(DIRECTORY
   config
   launch
+  rqt
   rviz
   DESTINATION share/${PROJECT_NAME}
 )

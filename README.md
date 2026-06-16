@@ -114,6 +114,22 @@ By default this records:
 
 Topics are resolved from `config/spot/colored_cloud_map_aggregator.yaml`, and output is written to `~/bag/reconstruction_inputs_YYYYMMDD_HHMMSS`.
 
+Replay Spot reconstruction from recorded bag (latest by default):
+```bash
+ros2 launch pointcloud_colorizer spot/spot_replay_reconstruction.launch.py
+```
+
+Replay defaults:
+- uses latest bag under `~/bag` with prefix `reconstruction_inputs_`
+- replays at `x3` (`play_rate:=3.0`)
+- reconstructs with `map_voxel_size:=0.1`
+- runs only the map aggregator in a composable container (no odom-earth logger)
+
+To replay a specific bag directory:
+```bash
+ros2 launch pointcloud_colorizer spot/spot_replay_reconstruction.launch.py bag_path:=~/bag/reconstruction_inputs_20260616_120000
+```
+
 Example bagfile playing:
 ```bash
 ros2 bag play recording_20260423_153545 --topics \
